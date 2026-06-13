@@ -55,81 +55,241 @@ def set_product_image(
 
 
 # --------------------------------------------------------------------------- #
-# Color links (similar-color mappings)
+# Brands & products
 # --------------------------------------------------------------------------- #
-def add_link(
+def add_brand(
     conn: sqlite3.Connection,
-    from_product_id: int,
-    to_product_id: int,
-    note: Optional[str] = None,
+    code: str,
+    name: Optional[str] = None,
+    has_sheet: bool = False,
 ) -> int:
-    """Create a resolved, user-authored link between two products.
+    """Create a new brand and return its id.
 
-    Returns the new link id. Rejects self-links and duplicates of an existing
-    link in either direction.
+    ``code`` is required and must be unique (case-insensitive). ``has_sheet``
+    marks whether the brand has a source price sheet (affects the brand filter).
     """
-    if from_product_id == to_product_id:
-        raise MutationError("A product cannot be linked to itself.")
-    _require_product(conn, from_product_id)
-    to_row = _require_product(conn, to_product_id)
-
-    existing = conn.execute(
-        "SELECT id FROM color_links "
-        "WHERE (from_product_id = ? AND to_product_id = ?) "
-        "   OR (from_product_id = ? AND to_product_id = ?) "
-        "LIMIT 1",
-        (from_product_id, to_product_id, to_product_id, from_product_id),
+    code = (code or "").strip()
+    if not code:
+        raise MutationError("A brand code is required.")
+    clash = conn.execute(
+        "SELECT id FROM brands WHERE lower(code) = lower(?)", (code,)
     ).fetchone()
-    if existing is not None:
-        raise MutationError("These products are already linked.")
+    if clash is not None:
+        raise MutationError(f"A brand with code {code!r} already exists.")
 
     cur = conn.execute(
-        "INSERT INTO color_links("
-        "from_product_id, to_product_id, to_brand_code, raw_ref, normalized, "
-        "status, source, note, created_at) "
-        "VALUES (?, ?, ?, ?, ?, 'resolved', 'user', ?, ?)",
-        (
-            from_product_id,
-            to_product_id,
-            to_row["brand_code"],
-            None,
-            None,
-            note,
-            _now(),
-        ),
+        "INSERT INTO brands(code, name, has_sheet) VALUES (?, ?, ?)",
+        (code, (name or "").strip() or None, 1 if has_sheet else 0),
     )
-    link_id = int(cur.lastrowid)
+    brand_id = int(cur.lastrowid)
     audit.log_change(
         conn,
-        action="add_link",
-        entity="color_link",
-        entity_id=link_id,
-        details={
-            "from_product_id": from_product_id,
-            "to_product_id": to_product_id,
-            "note": note,
-        },
+        action="add_brand",
+        entity="brand",
+        entity_id=brand_id,
+        details={"code": code, "name": name, "has_sheet": bool(has_sheet)},
     )
     conn.commit()
-    return link_id
+    return brand_id
 
 
-def remove_link(conn: sqlite3.Connection, link_id: int) -> None:
-    """Delete a color link by id."""
+def add_product(
+    conn: sqlite3.Connection,
+    brand_id: int,
+    sku: Optional[str] = None,
+    color_name: Optional[str] = None,
+    shade_no: Optional[str] = None,
+    thickness: Optional[float] = None,
+    self_label: Optional[str] = None,
+    category: Optional[str] = None,
+) -> int:
+    """Create a new product under ``brand_id`` and return its id.
+
+    Requires the brand to exist and at least one of SKU/color name. Enforces
+    the per-brand SKU uniqueness the schema already guarantees, with a friendly
+    error instead of an IntegrityError.
+    """
+    brand = conn.execute(
+        "SELECT id, code FROM brands WHERE id = ?", (brand_id,)
+    ).fetchone()
+    if brand is None:
+        raise MutationError(f"No brand with id {brand_id}")
+
+    sku = (sku or "").strip() or None
+    color_name = (color_name or "").strip() or None
+    if not sku and not color_name:
+        raise MutationError("A product needs at least a SKU or a color name.")
+    if sku is not None:
+        dup = conn.execute(
+            "SELECT id FROM products WHERE brand_id = ? AND sku = ?",
+            (brand_id, sku),
+        ).fetchone()
+        if dup is not None:
+            raise MutationError(
+                f"{brand['code']} already has a product with SKU {sku!r}."
+            )
+
+    cur = conn.execute(
+        "INSERT INTO products("
+        "brand_id, sku, shade_no, color_name, thickness, self_label, "
+        "category, source_sheet) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, '(manual)')",
+        (
+            brand_id,
+            sku,
+            (shade_no or "").strip() or None,
+            color_name,
+            thickness,
+            (self_label or "").strip() or None,
+            (category or "").strip() or None,
+        ),
+    )
+    product_id = int(cur.lastrowid)
+    audit.log_change(
+        conn,
+        action="add_product",
+        entity="product",
+        entity_id=product_id,
+        details={"brand_id": brand_id, "sku": sku, "color_name": color_name},
+    )
+    conn.commit()
+    return product_id
+
+
+# --------------------------------------------------------------------------- #
+# Color families (similar-color equivalence classes)
+# --------------------------------------------------------------------------- #
+def _group_of(conn: sqlite3.Connection, product_id: int) -> Optional[int]:
+    """Return a product's color_group_id (None when ungrouped)."""
+    return _require_product(conn, product_id)["color_group_id"]
+
+
+def _ensure_same_family(
+    conn: sqlite3.Connection, anchor_id: int, member_id: int
+) -> int:
+    """Put both products in one color group; return that group's id.
+
+    Creates a group, joins one to the other's group, or merges two groups as
+    needed. Idempotent: if they already share a group it is a no-op. Does NOT
+    commit or audit — callers own that.
+    """
+    ga = _group_of(conn, anchor_id)
+    gb = _group_of(conn, member_id)
+
+    if ga is not None and ga == gb:
+        return ga
+    if ga is None and gb is None:
+        gid = int(
+            conn.execute(
+                "INSERT INTO color_groups(created_at) VALUES (?)", (_now(),)
+            ).lastrowid
+        )
+        conn.execute(
+            "UPDATE products SET color_group_id = ? WHERE id IN (?, ?)",
+            (gid, anchor_id, member_id),
+        )
+        return gid
+    if ga is not None and gb is None:
+        conn.execute(
+            "UPDATE products SET color_group_id = ? WHERE id = ?",
+            (ga, member_id),
+        )
+        return ga
+    if ga is None and gb is not None:
+        conn.execute(
+            "UPDATE products SET color_group_id = ? WHERE id = ?",
+            (gb, anchor_id),
+        )
+        return gb
+    # Both grouped, different groups: merge gb into ga.
+    conn.execute(
+        "UPDATE products SET color_group_id = ? WHERE color_group_id = ?",
+        (ga, gb),
+    )
+    conn.execute("DELETE FROM color_groups WHERE id = ?", (gb,))
+    return ga
+
+
+def add_to_family(
+    conn: sqlite3.Connection, anchor_id: int, member_id: int
+) -> int:
+    """Mark two products as similar colors (same family). Returns the group id.
+
+    Rejects self-links and a product already in the anchor's family.
+    """
+    if anchor_id == member_id:
+        raise MutationError("A product cannot be similar to itself.")
+    _require_product(conn, anchor_id)
+    _require_product(conn, member_id)
+
+    ga = _group_of(conn, anchor_id)
+    if ga is not None and ga == _group_of(conn, member_id):
+        raise MutationError("These colors are already in the same family.")
+
+    gid = _ensure_same_family(conn, anchor_id, member_id)
+    audit.log_change(
+        conn,
+        action="add_to_family",
+        entity="product",
+        entity_id=member_id,
+        details={"anchor_id": anchor_id, "member_id": member_id, "group_id": gid},
+    )
+    conn.commit()
+    return gid
+
+
+def remove_from_family(conn: sqlite3.Connection, product_id: int) -> None:
+    """Detach a product from its color family entirely.
+
+    The product loses its group membership. If that leaves the group with one
+    or zero members, the group is dissolved so a "family" never has a lone
+    member.
+    """
+    gid = _group_of(conn, product_id)
+    if gid is None:
+        raise MutationError("This color is not part of a family.")
+
+    conn.execute(
+        "UPDATE products SET color_group_id = NULL WHERE id = ?", (product_id,)
+    )
+    remaining = conn.execute(
+        "SELECT id FROM products WHERE color_group_id = ?", (gid,)
+    ).fetchall()
+    if len(remaining) <= 1:
+        conn.execute(
+            "UPDATE products SET color_group_id = NULL WHERE color_group_id = ?",
+            (gid,),
+        )
+        conn.execute("DELETE FROM color_groups WHERE id = ?", (gid,))
+
+    audit.log_change(
+        conn,
+        action="remove_from_family",
+        entity="product",
+        entity_id=product_id,
+        details={"group_id": gid, "dissolved": len(remaining) <= 1},
+    )
+    conn.commit()
+
+
+# --------------------------------------------------------------------------- #
+# Pending references (unresolved / external import links)
+# --------------------------------------------------------------------------- #
+def remove_reference(conn: sqlite3.Connection, link_id: int) -> None:
+    """Delete a pending (unresolved/external) color reference by id."""
     row = conn.execute(
         "SELECT * FROM color_links WHERE id = ?", (link_id,)
     ).fetchone()
     if row is None:
-        raise MutationError(f"No color link with id {link_id}")
+        raise MutationError(f"No color reference with id {link_id}")
     conn.execute("DELETE FROM color_links WHERE id = ?", (link_id,))
     audit.log_change(
         conn,
-        action="remove_link",
+        action="remove_reference",
         entity="color_link",
         entity_id=link_id,
         details={
             "from_product_id": row["from_product_id"],
-            "to_product_id": row["to_product_id"],
             "raw_ref": row["raw_ref"],
             "status": row["status"],
         },
@@ -137,42 +297,42 @@ def remove_link(conn: sqlite3.Connection, link_id: int) -> None:
     conn.commit()
 
 
-def resolve_link(
+def resolve_reference(
     conn: sqlite3.Connection, link_id: int, to_product_id: int
-) -> None:
-    """Point an unresolved/external link at a real product.
+) -> int:
+    """Resolve a pending reference to a real product, adding it to the family.
 
-    Marks the link ``resolved`` and ``source='user'`` while preserving its
-    original ``raw_ref`` for provenance.
+    The referencing product and ``to_product_id`` are placed in one color
+    family and the now-redundant pending reference row is deleted. Returns the
+    resulting group id. ``raw_ref`` provenance is preserved in the audit log.
     """
     link = conn.execute(
         "SELECT * FROM color_links WHERE id = ?", (link_id,)
     ).fetchone()
     if link is None:
-        raise MutationError(f"No color link with id {link_id}")
-    to_row = _require_product(conn, to_product_id)
-    if link["from_product_id"] == to_product_id:
-        raise MutationError("A product cannot be linked to itself.")
+        raise MutationError(f"No color reference with id {link_id}")
+    from_pid = link["from_product_id"]
+    _require_product(conn, to_product_id)
+    if from_pid == to_product_id:
+        raise MutationError("A product cannot be similar to itself.")
 
-    conn.execute(
-        "UPDATE color_links "
-        "SET to_product_id = ?, to_brand_code = ?, status = 'resolved', "
-        "    source = 'user' "
-        "WHERE id = ?",
-        (to_product_id, to_row["brand_code"], link_id),
-    )
+    gid = _ensure_same_family(conn, from_pid, to_product_id)
+    conn.execute("DELETE FROM color_links WHERE id = ?", (link_id,))
     audit.log_change(
         conn,
-        action="resolve_link",
+        action="resolve_reference",
         entity="color_link",
         entity_id=link_id,
         details={
+            "from_product_id": from_pid,
             "to_product_id": to_product_id,
             "raw_ref": link["raw_ref"],
             "previous_status": link["status"],
+            "group_id": gid,
         },
     )
     conn.commit()
+    return gid
 
 
 # --------------------------------------------------------------------------- #

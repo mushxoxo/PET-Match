@@ -47,7 +47,8 @@ def conn(tmp_path):
         )
         product_ids[sku] = cur.lastrowid
 
-    # A resolved link: AT Pink Salt -> BAJAJ Pink Salt.
+    # A resolved link: AT Pink Salt -> BAJAJ Pink Salt. migrate() (below) folds
+    # this into a shared color group.
     c.execute(
         "INSERT INTO color_links(from_product_id, to_product_id, to_brand_code, "
         "raw_ref, normalized, status, source) "
@@ -88,6 +89,9 @@ def conn(tmp_path):
         ("Alpha", 100.0, 80.0),
     )
     c.commit()
+
+    # Fold the resolved link into a color group, matching production startup.
+    db.migrate(c)
 
     try:
         yield c, product_ids, brand_ids
@@ -170,40 +174,57 @@ def test_get_product(conn):
     assert search.get_product(c, 999999) is None
 
 
-def test_get_similar_colors_resolved_both_ends(conn):
+def test_get_similar_colors_family_is_symmetric(conn):
     c, product_ids, _ = conn
     at_pink = product_ids["AT-101"]
     bj_pink = product_ids["BJ-200"]
 
-    # Out side: AT Pink Salt links to BAJAJ Pink Salt.
-    out_links = search.get_similar_colors(c, at_pink)
-    resolved_out = [
-        l for l in out_links if l["status"] == "resolved" and l["direction"] == "out"
-    ]
-    assert len(resolved_out) == 1
-    link = resolved_out[0]
-    assert link["other_product_id"] == bj_pink
-    assert link["other_label"] == "BAJAJ BJ-200 Pink Salt"
+    # AT Pink Salt sees BAJAJ Pink Salt as a family member...
+    from_at = search.get_similar_colors(c, at_pink)
+    members = [l for l in from_at if l["kind"] == "member"]
+    assert len(members) == 1
+    assert members[0]["member_product_id"] == bj_pink
+    assert members[0]["other_product_id"] == bj_pink
+    assert members[0]["status"] == "resolved"
+    assert members[0]["other_label"] == "BAJAJ BJ-200 Pink Salt"
 
-    # In side: BAJAJ Pink Salt sees the incoming link from AT Pink Salt.
-    in_links = search.get_similar_colors(c, bj_pink)
-    resolved_in = [
-        l for l in in_links if l["status"] == "resolved" and l["direction"] == "in"
-    ]
-    assert len(resolved_in) == 1
-    assert resolved_in[0]["other_product_id"] == at_pink
-    assert resolved_in[0]["other_label"] == "AT AT-101 Pink Salt"
+    # ...and the relationship is symmetric from the other side.
+    from_bj = search.get_similar_colors(c, bj_pink)
+    members = [l for l in from_bj if l["kind"] == "member"]
+    assert len(members) == 1
+    assert members[0]["member_product_id"] == at_pink
+    assert members[0]["other_label"] == "AT AT-101 Pink Salt"
+
+
+def test_get_similar_colors_transitive_closure(conn):
+    """A third color linked to one family member appears for all of them."""
+    c, product_ids, _ = conn
+    from numobel import mutations
+
+    # Sky Grey is added to the Pink Salt family via AT Pink Salt only...
+    sky = product_ids["AT-102"]
+    mutations.add_to_family(c, product_ids["AT-101"], sky)
+
+    # ...yet BAJAJ Pink Salt (linked only to AT Pink Salt) now sees Sky Grey.
+    bj_members = {
+        l["member_product_id"]
+        for l in search.get_similar_colors(c, product_ids["BJ-200"])
+        if l["kind"] == "member"
+    }
+    assert sky in bj_members
+    assert product_ids["AT-101"] in bj_members
 
 
 def test_get_similar_colors_external(conn):
     c, product_ids, _ = conn
     at_gothic = product_ids["AT-100"]
     links = search.get_similar_colors(c, at_gothic)
-    external = [l for l in links if l["status"] == "external"]
-    assert len(external) == 1
-    ext = external[0]
-    assert ext["direction"] == "out"
+    pending = [l for l in links if l["kind"] == "pending"]
+    assert len(pending) == 1
+    ext = pending[0]
+    assert ext["status"] == "external"
     assert ext["other_product_id"] is None
+    assert ext["link_id"] is not None
     assert ext["raw_ref"] == "PCP Smoke"
     assert "PCP Smoke" in ext["other_label"]
     assert "[PCP]" in ext["other_label"]

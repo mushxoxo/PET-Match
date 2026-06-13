@@ -35,13 +35,18 @@ from PySide6.QtWidgets import (
 )
 
 from numobel import db, mutations, search
+from numobel.ui.forms import ProductFormDialog
 
 # Role storing the navigable product id on a similar-color list item.
 _NAV_ROLE = Qt.UserRole + 1
-# Role storing the link id on a similar-color list item.
+# Role storing the pending-reference link id on a similar-color list item.
 _LINK_ROLE = Qt.UserRole + 2
-# Role storing the link status on a similar-color list item.
+# Role storing the link/member status on a similar-color list item.
 _STATUS_ROLE = Qt.UserRole + 3
+# Role storing 'member' or 'pending' on a similar-color list item.
+_KIND_ROLE = Qt.UserRole + 4
+# Role storing the family member's product id (member rows only).
+_MEMBER_ROLE = Qt.UserRole + 5
 
 # Role storing the product id on a picker-dialog result item.
 _PICK_ROLE = Qt.UserRole + 1
@@ -126,7 +131,8 @@ class DetailPanel(QWidget):
         self._similar_box = QGroupBox("Similar Colors")
         sim_layout = QVBoxLayout(self._similar_box)
         self._similar_hint = QLabel(
-            "Double-click a resolved color to jump to it."
+            "The whole color family is shown. Double-click a member to jump to "
+            "it."
         )
         self._similar_hint.setStyleSheet("color: gray; font-size: 11px;")
         sim_layout.addWidget(self._similar_hint)
@@ -296,24 +302,29 @@ class DetailPanel(QWidget):
             return
 
         for link in links:
+            kind = link["kind"]
             status = link["status"]
             label = link["other_label"] or link["raw_ref"] or "(unknown)"
-            text = f"{label}  ({status})"
-            item = QListWidgetItem(text)
-            item.setData(_LINK_ROLE, link["link_id"])
-            item.setData(_STATUS_ROLE, status)
 
-            other_id = link["other_product_id"]
-            if status == "resolved" and other_id is not None:
-                item.setData(_NAV_ROLE, other_id)
+            if kind == "member":
+                item = QListWidgetItem(label)
+                item.setData(_KIND_ROLE, "member")
+                item.setData(_STATUS_ROLE, status)
+                item.setData(_MEMBER_ROLE, link["member_product_id"])
+                item.setData(_NAV_ROLE, link["other_product_id"])
                 item.setToolTip("Double-click to open this color")
-            elif status == "external":
-                font = item.font()
-                font.setItalic(True)
-                item.setFont(font)
-                item.setForeground(Qt.gray)
-            else:  # unresolved
-                item.setForeground(Qt.darkYellow)
+            else:  # pending (unresolved / external)
+                item = QListWidgetItem(f"{label}  ({status})")
+                item.setData(_KIND_ROLE, "pending")
+                item.setData(_STATUS_ROLE, status)
+                item.setData(_LINK_ROLE, link["link_id"])
+                if status == "external":
+                    font = item.font()
+                    font.setItalic(True)
+                    item.setFont(font)
+                    item.setForeground(Qt.gray)
+                else:  # unresolved
+                    item.setForeground(Qt.darkYellow)
 
             self._similar_list.addItem(item)
 
@@ -392,14 +403,14 @@ class DetailPanel(QWidget):
         self._add_link_btn.setEnabled(has_product)
 
         item = self._similar_list.currentItem()
-        link_id = None if item is None else item.data(_LINK_ROLE)
-        status = None if item is None else item.data(_STATUS_ROLE)
-        has_link = has_product and link_id is not None
+        kind = None if item is None else item.data(_KIND_ROLE)
+        # A row is removable whether it is a family member or a pending ref.
+        removable = has_product and kind in ("member", "pending")
+        # Only pending references can be resolved to a real product.
+        resolvable = has_product and kind == "pending"
 
-        self._remove_link_btn.setEnabled(has_link)
-        self._resolve_link_btn.setEnabled(
-            has_link and status in ("unresolved", "external")
-        )
+        self._remove_link_btn.setEnabled(removable)
+        self._resolve_link_btn.setEnabled(resolvable)
 
     def _on_add_link(self) -> None:
         if self._product_id is None:
@@ -408,7 +419,7 @@ class DetailPanel(QWidget):
         if chosen is None:
             return
         try:
-            mutations.add_link(self._conn, self._product_id, chosen)
+            mutations.add_to_family(self._conn, self._product_id, chosen)
         except mutations.MutationError as err:
             QMessageBox.warning(self, "Cannot do that", str(err))
             return
@@ -420,11 +431,20 @@ class DetailPanel(QWidget):
         item = self._similar_list.currentItem()
         if item is None:
             return
-        link_id = item.data(_LINK_ROLE)
-        if link_id is None:
-            return
+        kind = item.data(_KIND_ROLE)
         try:
-            mutations.remove_link(self._conn, int(link_id))
+            if kind == "member":
+                member_id = item.data(_MEMBER_ROLE)
+                if member_id is None:
+                    return
+                mutations.remove_from_family(self._conn, int(member_id))
+            elif kind == "pending":
+                link_id = item.data(_LINK_ROLE)
+                if link_id is None:
+                    return
+                mutations.remove_reference(self._conn, int(link_id))
+            else:
+                return
         except mutations.MutationError as err:
             QMessageBox.warning(self, "Cannot do that", str(err))
             return
@@ -436,6 +456,8 @@ class DetailPanel(QWidget):
         item = self._similar_list.currentItem()
         if item is None:
             return
+        if item.data(_KIND_ROLE) != "pending":
+            return
         link_id = item.data(_LINK_ROLE)
         if link_id is None:
             return
@@ -443,7 +465,7 @@ class DetailPanel(QWidget):
         if chosen is None:
             return
         try:
-            mutations.resolve_link(self._conn, int(link_id), chosen)
+            mutations.resolve_reference(self._conn, int(link_id), chosen)
         except mutations.MutationError as err:
             QMessageBox.warning(self, "Cannot do that", str(err))
             return
@@ -490,6 +512,14 @@ class _ProductPickerDialog(QDialog):
         self._results.itemSelectionChanged.connect(self._update_ok)
         layout.addWidget(self._results)
 
+        create_row = QHBoxLayout()
+        create_row.setContentsMargins(0, 0, 0, 0)
+        self._create_btn = QPushButton("Create New Color…")
+        self._create_btn.clicked.connect(self._on_create_new)
+        create_row.addWidget(self._create_btn)
+        create_row.addStretch(1)
+        layout.addLayout(create_row)
+
         self._buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel
         )
@@ -524,6 +554,20 @@ class _ProductPickerDialog(QDialog):
         ok_button = self._buttons.button(QDialogButtonBox.Ok)
         if ok_button is not None:
             ok_button.setEnabled(self._results.currentItem() is not None)
+
+    def _on_create_new(self) -> None:
+        """Create a brand-new product and select it as the pick result."""
+        dialog = ProductFormDialog(self._conn, parent=self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        new_id = dialog.created_product_id()
+        if new_id is None:
+            return
+        if new_id == self._exclude_id:
+            # Shouldn't happen (new id is unique), but guard anyway.
+            return
+        self._chosen_id = int(new_id)
+        self.accept()
 
     def _on_result_double(self, item: QListWidgetItem) -> None:
         self._chosen_id = int(item.data(_PICK_ROLE))

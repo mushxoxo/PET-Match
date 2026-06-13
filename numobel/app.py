@@ -30,6 +30,9 @@ def main() -> int:
         return 1
 
     conn = db.connect()
+    # Bring older databases up to the current schema (adds color groups and
+    # folds legacy resolved links into transitive color families).
+    db.migrate(conn)
 
     # Imported lazily so a missing DB exits before importing the UI stack.
     from numobel.ui import theme

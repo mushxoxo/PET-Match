@@ -207,6 +207,11 @@ def build(db_path: str = db.DEFAULT_DB_PATH, excel_path: str = DEFAULT_EXCEL_PAT
 
     conn.commit()
 
+    # NOTE: resolved cross-reference links are folded into transitive color
+    # families by db.migrate(), which the app runs at startup (and tests run
+    # explicitly). Keeping build() free of that step leaves the resolved links
+    # inspectable here and in the import summary.
+
     total_products = sum(per_sheet_counts.values())
     summary = {
         "products_by_sheet": per_sheet_counts,

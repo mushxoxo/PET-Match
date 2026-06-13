@@ -10,6 +10,7 @@ from PySide6.QtGui import QAction, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDialog,
     QHBoxLayout,
     QHeaderView,
     QLineEdit,
@@ -26,6 +27,7 @@ from numobel import db, search
 from numobel.ui import theme
 from numobel.ui.audit_tab import AuditTab
 from numobel.ui.detail_panel import DetailPanel
+from numobel.ui.forms import BrandFormDialog, ProductFormDialog
 from numobel.ui.price_tab import PriceTab
 
 # Role storing the product id on a results-table row.
@@ -75,11 +77,53 @@ class MainWindow(QMainWindow):
     # Menu + theme
     # ------------------------------------------------------------------ #
     def _build_menu(self) -> None:
+        catalog_menu = self.menuBar().addMenu("&Catalog")
+        add_product = QAction("Add &Product / Color…", self)
+        add_product.setShortcut("Ctrl+N")
+        add_product.triggered.connect(self._on_add_product)
+        catalog_menu.addAction(add_product)
+        add_brand = QAction("Add &Brand…", self)
+        add_brand.triggered.connect(self._on_add_brand)
+        catalog_menu.addAction(add_brand)
+
         view_menu = self.menuBar().addMenu("&View")
         toggle = QAction("Toggle &Dark / Light Theme", self)
         toggle.setShortcut("Ctrl+T")
         toggle.triggered.connect(self._toggle_theme)
         view_menu.addAction(toggle)
+
+    # ------------------------------------------------------------------ #
+    # Catalog creation
+    # ------------------------------------------------------------------ #
+    def _on_add_brand(self) -> None:
+        BrandFormDialog(self._conn, self).exec()
+        # A new brand may belong in the brand filter; rebuild it.
+        self._reload_brand_filter()
+
+    def _on_add_product(self) -> None:
+        dialog = ProductFormDialog(self._conn, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self._reload_brand_filter()
+        new_id = dialog.created_product_id()
+        # Refresh results and jump to the newly created product.
+        self._run_search()
+        if new_id is not None:
+            self.load_product(int(new_id))
+
+    def _reload_brand_filter(self) -> None:
+        """Rebuild the brand filter combo, preserving the current selection."""
+        current = self.brand_combo.currentData()
+        self.brand_combo.blockSignals(True)
+        self.brand_combo.clear()
+        self.brand_combo.addItem("All brands", None)
+        for brand in search.list_brands(self._conn, only_with_sheet=True):
+            label = brand["name"] or brand["code"]
+            self.brand_combo.addItem(f"{label} ({brand['code']})", brand["code"])
+        idx = self.brand_combo.findData(current)
+        if idx >= 0:
+            self.brand_combo.setCurrentIndex(idx)
+        self.brand_combo.blockSignals(False)
 
     def _toggle_theme(self) -> None:
         app = QApplication.instance()

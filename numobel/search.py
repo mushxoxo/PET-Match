@@ -181,59 +181,69 @@ def _resolved_label(row: sqlite3.Row) -> str:
 def get_similar_colors(
     conn: sqlite3.Connection, product_id: int
 ) -> list[dict]:
-    """Return all color_links touching ``product_id`` (bidirectional).
+    """Return a product's full similar-color family plus its pending references.
 
-    Each returned dict has keys: ``link_id``, ``status``, ``direction``
-    ('out' when this product is the from side, 'in' when the to side),
-    ``other_product_id``, ``other_label``, ``to_brand_code``, ``raw_ref``,
-    ``normalized``, ``source``.
+    Similarity is a transitive equivalence class: every product sharing this
+    product's ``color_group_id`` is returned, not merely its direct links. The
+    list also includes this product's own unresolved/external references (raw
+    text from the import that has not yet been matched to a real product).
+
+    Each dict has keys:
+
+    * ``kind`` — ``'member'`` for a fellow family product, ``'pending'`` for an
+      unresolved/external reference.
+    * ``status`` — ``'resolved'`` for members; ``'unresolved'``/``'external'``
+      for pending references.
+    * ``member_product_id`` — the family product's id (members only).
+    * ``other_product_id`` — navigable product id (members), else ``None``.
+    * ``other_label`` — display label.
+    * ``link_id`` — color_links row id (pending references only).
+    * ``raw_ref`` — original reference text (pending references only).
     """
-    rows = conn.execute(
-        "SELECT * FROM color_links "
-        "WHERE from_product_id = ? OR to_product_id = ? "
-        "ORDER BY id",
-        (product_id, product_id),
-    ).fetchall()
+    product = get_product(conn, product_id)
+    if product is None:
+        return []
 
     results: list[dict] = []
-    for link in rows:
-        is_out = link["from_product_id"] == product_id
-        direction = "out" if is_out else "in"
 
-        other_product_id: Optional[int] = None
-        other_label: Optional[str] = None
+    group_id = product["color_group_id"]
+    if group_id is not None:
+        members = conn.execute(
+            _PRODUCT_SELECT
+            + " WHERE products.color_group_id = ? AND products.id <> ? "
+            "ORDER BY brands.code, products.sku, products.color_name",
+            (group_id, product_id),
+        ).fetchall()
+        for member in members:
+            results.append(
+                {
+                    "kind": "member",
+                    "status": "resolved",
+                    "member_product_id": member["id"],
+                    "other_product_id": member["id"],
+                    "other_label": _resolved_label(member),
+                    "link_id": None,
+                    "raw_ref": None,
+                }
+            )
 
-        if is_out:
-            # We are the from side; the other end is to_product_id (if resolved)
-            # or the raw_ref text otherwise.
-            if link["status"] == "resolved" and link["to_product_id"]:
-                other_product_id = link["to_product_id"]
-                other = get_product(conn, other_product_id)
-                if other is not None:
-                    other_label = _resolved_label(other)
-            else:
-                raw = link["raw_ref"] or ""
-                other_label = f"{raw} [{link['to_brand_code'] or ''}]"
-        else:
-            # We are the to side; the other end is the from_product_id.
-            other_product_id = link["from_product_id"]
-            other = get_product(conn, other_product_id)
-            if other is not None:
-                other_label = _resolved_label(other)
-            elif link["raw_ref"]:
-                other_label = f"{link['raw_ref']} [{link['to_brand_code'] or ''}]"
-
+    pending = conn.execute(
+        "SELECT * FROM color_links "
+        "WHERE from_product_id = ? AND status IN ('unresolved', 'external') "
+        "ORDER BY id",
+        (product_id,),
+    ).fetchall()
+    for link in pending:
+        raw = link["raw_ref"] or ""
         results.append(
             {
-                "link_id": link["id"],
+                "kind": "pending",
                 "status": link["status"],
-                "direction": direction,
-                "other_product_id": other_product_id,
-                "other_label": other_label,
-                "to_brand_code": link["to_brand_code"],
+                "member_product_id": None,
+                "other_product_id": None,
+                "other_label": f"{raw} [{link['to_brand_code'] or ''}]",
+                "link_id": link["id"],
                 "raw_ref": link["raw_ref"],
-                "normalized": link["normalized"],
-                "source": link["source"],
             }
         )
 

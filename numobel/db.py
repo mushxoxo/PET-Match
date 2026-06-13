@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+from datetime import datetime
 from pathlib import Path
 
 
@@ -53,6 +54,12 @@ def create_schema(conn: sqlite3.Connection) -> None:
             has_sheet INTEGER NOT NULL DEFAULT 0
         );
 
+        CREATE TABLE IF NOT EXISTS color_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            note TEXT,
+            created_at TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             brand_id INTEGER NOT NULL REFERENCES brands(id),
@@ -65,7 +72,8 @@ def create_schema(conn: sqlite3.Connection) -> None:
             extra_json TEXT,
             image_path TEXT,
             source_sheet TEXT,
-            source_row INTEGER
+            source_row INTEGER,
+            color_group_id INTEGER REFERENCES color_groups(id)
         );
 
         CREATE INDEX IF NOT EXISTS idx_products_brand_id
@@ -121,6 +129,14 @@ def create_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    # The color_group_id index can only exist once the column does. Fresh DBs
+    # have it from the products CREATE above; legacy DBs gain it in migrate().
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(products)")}
+    if "color_group_id" in cols:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_products_color_group "
+            "ON products(color_group_id)"
+        )
     conn.commit()
 
 
@@ -137,9 +153,118 @@ def reset_catalog(conn: sqlite3.Connection) -> None:
     """
     conn.execute("DELETE FROM color_links")
     conn.execute("DELETE FROM products")
+    conn.execute("DELETE FROM color_groups")
     conn.execute("DELETE FROM brands")
     conn.execute("DELETE FROM prices")
     conn.commit()
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """Bring an existing database up to the current schema (idempotent).
+
+    Adds the ``color_groups`` table and ``products.color_group_id`` column when
+    missing, then folds any ``resolved`` color_links into color groups so that
+    "similar colors" behave as transitive equivalence classes rather than a
+    sparse set of one-hop edges. Safe to call on every startup.
+    """
+    create_schema(conn)  # ensures color_groups table + indexes exist
+
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(products)")}
+    if "color_group_id" not in cols:
+        conn.execute(
+            "ALTER TABLE products "
+            "ADD COLUMN color_group_id INTEGER REFERENCES color_groups(id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_products_color_group "
+            "ON products(color_group_id)"
+        )
+
+    _fold_resolved_links_into_groups(conn)
+    conn.commit()
+
+
+def _fold_resolved_links_into_groups(conn: sqlite3.Connection) -> None:
+    """Convert ``resolved`` color_links into color groups, then drop them.
+
+    Computes the connected components of the resolved-link graph (treated as
+    undirected) and assigns every product in a component a shared
+    ``color_group_id``. Reuses an existing group id when any member already has
+    one, merging groups as needed so the operation is idempotent and safe to
+    re-run after a re-import. Unresolved/external links are left untouched.
+    """
+    resolved = conn.execute(
+        "SELECT from_product_id, to_product_id FROM color_links "
+        "WHERE status = 'resolved' AND to_product_id IS NOT NULL"
+    ).fetchall()
+    if not resolved:
+        return
+
+    # Union-find over the products touched by resolved links.
+    parent: dict[int, int] = {}
+
+    def find(x: int) -> int:
+        parent.setdefault(x, x)
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:  # path compression
+            parent[x], x = root, parent[x]
+        return root
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for link in resolved:
+        a, b = link["from_product_id"], link["to_product_id"]
+        if a != b:
+            union(a, b)
+
+    components: dict[int, list[int]] = {}
+    for node in list(parent):
+        components.setdefault(find(node), []).append(node)
+
+    now = datetime.now().isoformat(timespec="seconds")
+    for members in components.values():
+        if len(members) < 2:
+            continue
+        placeholders = ",".join("?" * len(members))
+        existing = [
+            row["color_group_id"]
+            for row in conn.execute(
+                f"SELECT DISTINCT color_group_id FROM products "
+                f"WHERE id IN ({placeholders}) AND color_group_id IS NOT NULL",
+                members,
+            )
+        ]
+        if existing:
+            gid = existing[0]
+        else:
+            gid = int(
+                conn.execute(
+                    "INSERT INTO color_groups(created_at) VALUES(?)", (now,)
+                ).lastrowid
+            )
+        conn.execute(
+            f"UPDATE products SET color_group_id = ? WHERE id IN ({placeholders})",
+            [gid, *members],
+        )
+        # Merge any other pre-existing groups for these products into gid.
+        for old in existing[1:]:
+            if old != gid:
+                conn.execute(
+                    "UPDATE products SET color_group_id = ? "
+                    "WHERE color_group_id = ?",
+                    (gid, old),
+                )
+                conn.execute("DELETE FROM color_groups WHERE id = ?", (old,))
+
+    conn.execute(
+        "DELETE FROM color_links "
+        "WHERE status = 'resolved' AND to_product_id IS NOT NULL"
+    )
 
 
 def get_setting(conn: sqlite3.Connection, key: str, default=None):
