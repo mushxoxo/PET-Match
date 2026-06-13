@@ -71,11 +71,11 @@ def resolve_name_color(name: Optional[str]) -> Optional[QColor]:
     """
     if not name:
         return None
-    match: Optional[str] = None
+    found_hex: Optional[str] = None
     for word in _WORD_RE.findall(name.lower()):
         if word in _COLOR_WORDS:
-            match = _COLOR_WORDS[word]
-    return QColor(match) if match is not None else None
+            found_hex = _COLOR_WORDS[word]
+    return QColor(found_hex) if found_hex is not None else None
 
 
 def family_average_color(
@@ -85,6 +85,9 @@ def family_average_color(
 
     Returns ``None`` when the product has no family or no family member
     resolves to a known color.
+
+    The ``conn`` must have ``row_factory = sqlite3.Row`` set (as provided by
+    ``numobel.db.connect``).
     """
     product = search.get_product(conn, product_id)
     if product is None:

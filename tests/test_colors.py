@@ -75,7 +75,14 @@ def test_swatch_color_name_then_family_then_grey():
     assert colors.swatch_color(conn, named).name() == "#c0392b"
     # Unnamed product in a family -> family average (not grey).
     unnamed = conn.execute("SELECT * FROM products WHERE id=30").fetchone()
-    assert colors.swatch_color(conn, unnamed).name() != colors.NEUTRAL_GREY.name()
+    red = QColor("#c0392b")
+    blue = QColor("#2e6fb0")
+    expected_avg = QColor(
+        (red.red() + blue.red()) // 2,
+        (red.green() + blue.green()) // 2,
+        (red.blue() + blue.blue()) // 2,
+    ).name()
+    assert colors.swatch_color(conn, unnamed).name() == expected_avg
     # Unnamed, no family -> grey.
     conn.execute("INSERT INTO products(id, brand_id, sku) VALUES (40,1,'A4')")
     conn.commit()
