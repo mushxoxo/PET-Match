@@ -71,3 +71,11 @@ def test_add_soft_shadow_attaches_effect():
     frame = QFrame()
     effect = theme.add_soft_shadow(frame, theme.LIGHT)
     assert frame.graphicsEffect() is effect
+
+
+def test_qlabel_is_transparent_in_qss():
+    assert "QLabel { background-color: transparent; }" in theme.build_qss(theme.LIGHT)
+
+
+def test_section_header_styled_in_qss():
+    assert 'QToolButton[class="SectionHeader"]' in theme.build_qss(theme.DARK)

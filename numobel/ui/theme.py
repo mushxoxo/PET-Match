@@ -122,6 +122,17 @@ QToolTip {{
     padding: 4px 8px;
     border-radius: 8px;
 }}
+QLabel {{ background-color: transparent; }}
+
+/* ---- Section headers (collapsible) ---- */
+QToolButton[class="SectionHeader"] {{
+    background-color: transparent;
+    border: none;
+    padding: 2px 0;
+    font-weight: 600;
+    color: {p.text};
+}}
+QToolButton[class="SectionHeader"]:hover {{ color: {p.accent}; }}
 
 /* ---- Cards ---- */
 QFrame[class="Card"] {{
