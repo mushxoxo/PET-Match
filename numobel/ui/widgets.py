@@ -9,13 +9,23 @@ from __future__ import annotations
 
 import hashlib
 
-from PySide6.QtCore import QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QIcon,
+    QPainter,
+    QPen,
+    QPixmap,
+    QPolygonF,
+)
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QToolButton,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -184,3 +194,92 @@ class ViewToggle(QWidget):
         else:
             self._btn.setIcon(_paint_icon(_draw_list, color))
             self._btn.setToolTip("Switch to gallery view")
+
+
+def _chevron_icon(color: QColor, *, down: bool, size: int = 12) -> QIcon:
+    """A small painted chevron (down = expanded, right = collapsed)."""
+    pix = QPixmap(size, size)
+    pix.fill(Qt.transparent)
+    painter = QPainter(pix)
+    try:
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        pen = QPen(color)
+        pen.setWidth(2)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        m = size / 2
+        if down:
+            pts = [QPointF(3, m - 1), QPointF(m, m + 2), QPointF(size - 3, m - 1)]
+        else:
+            pts = [QPointF(m - 1, 3), QPointF(m + 2, m), QPointF(m - 1, size - 3)]
+        painter.drawPolyline(QPolygonF(pts))
+    finally:
+        painter.end()
+    return QIcon(pix)
+
+
+class CollapsibleSection(QWidget):
+    """A titled section whose body can be collapsed.
+
+    Header is a painted-chevron + title button; clicking toggles the body. Use
+    :meth:`add_widget` / :meth:`add_layout` to fill the body. Emits
+    ``toggled(expanded)``.
+    """
+
+    toggled = Signal(bool)
+
+    def __init__(
+        self,
+        title: str,
+        parent: QWidget | None = None,
+        *,
+        expanded: bool = True,
+    ):
+        super().__init__(parent)
+        self._expanded = expanded
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self._header = QToolButton()
+        self._header.setText(title)
+        self._header.setCursor(Qt.PointingHandCursor)
+        self._header.setProperty("class", "SectionHeader")
+        self._header.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self._header.setIconSize(QSize(12, 12))
+        self._header.clicked.connect(self._on_click)
+        outer.addWidget(self._header)
+
+        self._body = QWidget()
+        self._body_layout = QVBoxLayout(self._body)
+        self._body_layout.setContentsMargins(0, 8, 0, 0)
+        outer.addWidget(self._body)
+
+        self._apply()
+
+    def add_widget(self, widget: QWidget) -> None:
+        self._body_layout.addWidget(widget)
+
+    def add_layout(self, layout) -> None:
+        self._body_layout.addLayout(layout)
+
+    def is_expanded(self) -> bool:
+        return self._expanded
+
+    def set_expanded(self, value: bool) -> None:
+        value = bool(value)
+        if value == self._expanded:
+            return
+        self._expanded = value
+        self._apply()
+        self.toggled.emit(self._expanded)
+
+    def _on_click(self) -> None:
+        self.set_expanded(not self._expanded)
+
+    def _apply(self) -> None:
+        self._body.setVisible(self._expanded)
+        color = QColor(theme.current_palette().text)
+        self._header.setIcon(_chevron_icon(color, down=self._expanded))
