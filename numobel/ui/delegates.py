@@ -149,7 +149,7 @@ class ProductGalleryDelegate(QStyledItemDelegate):
         chip_font = QFont(option.font)
         chip_font.setPixelSize(11)
         painter.setFont(chip_font)
-        chip_rect = QRect(card.left() + 12, ny + 20, card.width() - 24, 18)
+        chip_rect = QRect(card.left() + 12, card.bottom() - 22, card.width() - 24, 18)
         _chip(painter, chip_rect, brand, pal)
 
         painter.restore()
