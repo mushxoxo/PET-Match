@@ -37,5 +37,6 @@ def conn():
 def test_row_color_role_matches_resolver(app, conn):
     tab = CatalogTab(conn)
     item = tab.results_model.item(0, 0)
+    assert item is not None, "catalog model should auto-populate on init"
     assert item.data(NAME_ROLE) == "Ocean Blue"
     assert item.data(COLOR_ROLE) == colors.resolve_name_color("Ocean Blue").name()
