@@ -21,6 +21,17 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
+@pytest.fixture(autouse=True)
+def _cleanup_widgets(app):
+    yield
+    # Delete any panels created during the test so they don't outlive the
+    # (function-scoped) connection they hold and double-free at Qt teardown.
+    for w in app.topLevelWidgets():
+        w.setParent(None)
+        w.deleteLater()
+    app.processEvents()
+
+
 @pytest.fixture
 def conn():
     c = db.connect(":memory:")
