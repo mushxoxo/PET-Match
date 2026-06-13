@@ -103,8 +103,29 @@ class ProductGalleryDelegate(QStyledItemDelegate):
     """A catalog card: swatch on top, name + brand chip below, soft shadow."""
 
     _W = 168
-    _H = 188
+    _H = 200
     _PAD = 10
+
+    @staticmethod
+    def _layout(card: QRect) -> dict:
+        """Return non-overlapping swatch/name/chip rects inside ``card``.
+
+        Lays out top-down: a square swatch capped so a name line and a chip
+        line always fit below it.
+        """
+        pad = 12
+        name_h = 18
+        chip_h = 18
+        gap = 8
+        inner_w = card.width() - 2 * pad
+        avail = card.height() - 2 * pad - name_h - chip_h - gap
+        swatch = max(1, min(inner_w, avail))
+        sx = card.left() + pad
+        sy = card.top() + pad
+        swatch_rect = QRect(sx, sy, swatch, swatch)
+        name_rect = QRect(sx, swatch_rect.bottom() + gap, inner_w, name_h)
+        chip_rect = QRect(sx, name_rect.bottom() + 1, inner_w, chip_h)
+        return {"swatch": swatch_rect, "name": name_rect, "chip": chip_rect}
 
     def sizeHint(self, option, index) -> QSize:  # noqa: N802
         return QSize(self._W, self._H)
@@ -130,13 +151,16 @@ class ProductGalleryDelegate(QStyledItemDelegate):
                              2 if selected else 1))
         painter.drawRoundedRect(QRectF(card), 16, 16)
 
+        layout = self._layout(card)
+
         # Swatch.
-        thumb = card.width() - 24
         seed = index.data(SEED_ROLE) or index.data(NAME_ROLE) or ""
         color_hex = index.data(COLOR_ROLE)
         color = QColor(color_hex) if color_hex else None
-        pix = widgets.swatch_pixmap(str(seed), thumb, pal, color=color)
-        painter.drawPixmap(card.left() + 12, card.top() + 12, pix)
+        pix = widgets.swatch_pixmap(
+            str(seed), layout["swatch"].width(), pal, color=color
+        )
+        painter.drawPixmap(layout["swatch"].topLeft(), pix)
 
         # Name.
         name = str(index.data(NAME_ROLE) or "")
@@ -146,16 +170,13 @@ class ProductGalleryDelegate(QStyledItemDelegate):
         name_font.setPixelSize(13)
         painter.setFont(name_font)
         painter.setPen(QPen(QColor(pal.text)))
-        ny = card.top() + 12 + thumb + 6
-        name_rect = QRect(card.left() + 12, ny, card.width() - 24, 18)
-        painter.drawText(name_rect, Qt.AlignLeft | Qt.AlignVCenter, name)
+        painter.drawText(layout["name"], Qt.AlignLeft | Qt.AlignVCenter, name)
 
         # Brand chip.
         chip_font = QFont(option.font)
         chip_font.setPixelSize(11)
         painter.setFont(chip_font)
-        chip_rect = QRect(card.left() + 12, card.bottom() - 22, card.width() - 24, 18)
-        _chip(painter, chip_rect, brand, pal)
+        _chip(painter, layout["chip"], brand, pal)
 
         painter.restore()
 
