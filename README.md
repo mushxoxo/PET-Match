@@ -23,8 +23,10 @@ pip install -r requirements.txt
 
 ## Import the catalog (run once, or after the Excel changes)
 
-Builds `numobel.db` from `my_excel/NUMOBEL_ACOUSTICS_COLOR_MAPS.xlsx` and prints a
-summary (per-sheet product counts + resolved/unresolved/external link tallies):
+Builds `numobel.db` from `data/numobel-catalog.xlsx` and prints a summary
+(product counts + resolved/unresolved/external link tallies). The format is
+auto-detected, so the default file can be either a full snapshot exported from
+the app or the original `NUMOBEL_ACOUSTICS_COLOR_MAPS.xlsx` master workbook:
 
 ```bash
 python -m numobel.importer.run_import

@@ -5,8 +5,10 @@ products from every brand sheet (pass 1), synthesizes Numobel hub products from
 the distinct Numobel codes referenced across all mapping cells, then resolves
 cross-reference links (pass 2) and inserts the price table.
 
-Run ``python -m numobel.importer.run_import`` to build against the real
-workbook and print a summary.
+Run ``python -m numobel.importer.run_import`` to (re)build ``numobel.db`` from
+the default workbook (``data/numobel-catalog.xlsx``) and print a summary.
+The CLI auto-detects whether that file is a snapshot or the original master
+workbook; ``build()`` itself only parses the master-workbook format.
 """
 
 from __future__ import annotations
@@ -24,8 +26,8 @@ from .refparse import parse_ref
 
 DEFAULT_EXCEL_PATH = str(
     Path(__file__).resolve().parent.parent.parent
-    / "my_excel"
-    / "NUMOBEL_ACOUSTICS_COLOR_MAPS.xlsx"
+    / "data"
+    / "numobel-catalog.xlsx"
 )
 
 _DIGITS_RE = re.compile(r"\d+")
@@ -247,16 +249,29 @@ def _build(conn, excel_path: str) -> dict:
 
 def _print_summary(summary: dict) -> None:
     print("=== NUMOBEL import summary ===")
-    print("Products by sheet:")
-    for sheet, n in summary["products_by_sheet"].items():
-        print(f"  {sheet:18s} {n}")
+    # Snapshot restores have no per-sheet breakdown; master-workbook builds do.
+    if "products_by_sheet" in summary:
+        print("Products by sheet:")
+        for sheet, n in summary["products_by_sheet"].items():
+            print(f"  {sheet:18s} {n}")
     print(f"Total products: {summary['total_products']}")
     print("Link tallies:")
     for status, n in summary["links"].items():
         print(f"  {status:12s} {n}")
-    print(f"Total links: {summary['total_links']}")
+    print(f"Total links: {summary.get('total_links', sum(summary['links'].values()))}")
     print(f"Prices: {summary['prices']}")
+    if "images" in summary:
+        print(f"Images: {summary['images']}")
 
 
 if __name__ == "__main__":
-    _print_summary(build())
+    # Auto-detect the default file's format (snapshot or master workbook) and
+    # route to the right loader, then fold resolved links into color groups —
+    # exactly what the app does on an interactive import.
+    from numobel.importer.snapshot import import_workbook
+
+    _conn = db.connect()
+    _summary = import_workbook(excel_path=DEFAULT_EXCEL_PATH, conn=_conn)
+    db.migrate(_conn)
+    _conn.close()
+    _print_summary(_summary)
