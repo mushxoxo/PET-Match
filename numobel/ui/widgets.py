@@ -9,14 +9,13 @@ from __future__ import annotations
 
 import hashlib
 
-from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPixmap
+from PySide6.QtCore import QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QButtonGroup,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QPushButton,
+    QToolButton,
     QWidget,
 )
 
@@ -111,43 +110,77 @@ def swatch_pixmap(
     return pix
 
 
-class ViewToggle(QWidget):
-    """Segmented List/Gallery control. Emits ``changed(mode)``."""
+def _paint_icon(draw, color: QColor, size: int = 18) -> QIcon:
+    """Build a QIcon by running ``draw(painter, color, size)`` on a pixmap."""
+    pix = QPixmap(size, size)
+    pix.fill(Qt.transparent)
+    painter = QPainter(pix)
+    try:
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        draw(painter, color, size)
+    finally:
+        painter.end()
+    return QIcon(pix)
 
-    changed = Signal(str)  # "list" or "gallery"
+
+def _draw_list(painter: QPainter, color: QColor, size: int) -> None:
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QBrush(color))
+    bar_h = max(2, size // 7)
+    gap = (size - 3 * bar_h) / 4
+    for i in range(3):
+        y = gap + i * (bar_h + gap)
+        painter.drawRoundedRect(QRectF(1, y, size - 2, bar_h), 1.5, 1.5)
+
+
+def _draw_grid(painter: QPainter, color: QColor, size: int) -> None:
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QBrush(color))
+    cell = (size - 3) / 2
+    for cx in (1, 2 + cell):
+        for cy in (1, 2 + cell):
+            painter.drawRoundedRect(QRectF(cx, cy, cell, cell), 2, 2)
+
+
+class ViewToggle(QWidget):
+    """Single icon button that flips between list and gallery. Emits ``changed``.
+
+    Public API preserved from the old segmented control: ``changed(mode)``,
+    ``current()``, ``set_current(mode)`` with ``mode`` in ``{"list","gallery"}``.
+    The button shows the *current* mode's icon; its tooltip names the target.
+    """
+
+    changed = Signal(str)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
+        self._mode = "list"
+
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(4)
+        self._btn = QToolButton()
+        self._btn.setCursor(Qt.PointingHandCursor)
+        self._btn.setIconSize(QSize(18, 18))
+        self._btn.clicked.connect(self._on_click)
+        row.addWidget(self._btn)
+        self._refresh_icon()
 
-        self._list_btn = self._segment("List")
-        self._gallery_btn = self._segment("Gallery")
-        self._list_btn.setChecked(True)
-
-        self._group = QButtonGroup(self)
-        self._group.setExclusive(True)
-        self._group.addButton(self._list_btn, 0)
-        self._group.addButton(self._gallery_btn, 1)
-        self._group.idClicked.connect(self._on_clicked)
-
-        row.addWidget(self._list_btn)
-        row.addWidget(self._gallery_btn)
-
-    def _segment(self, text: str) -> QPushButton:
-        btn = QPushButton(text)
-        btn.setCheckable(True)
-        btn.setProperty("class", "Segment")
-        return btn
-
-    def _on_clicked(self, idx: int) -> None:
-        self.changed.emit("gallery" if idx == 1 else "list")
+    def _on_click(self) -> None:
+        self.set_current("gallery" if self._mode == "list" else "list")
 
     def current(self) -> str:
-        return "gallery" if self._gallery_btn.isChecked() else "list"
+        return self._mode
 
     def set_current(self, mode: str) -> None:
-        gallery = mode == "gallery"
-        (self._gallery_btn if gallery else self._list_btn).setChecked(True)
-        self.changed.emit("gallery" if gallery else "list")
+        self._mode = "gallery" if mode == "gallery" else "list"
+        self._refresh_icon()
+        self.changed.emit(self._mode)
+
+    def _refresh_icon(self) -> None:
+        color = QColor(theme.current_palette().text)
+        if self._mode == "gallery":
+            self._btn.setIcon(_paint_icon(_draw_grid, color))
+            self._btn.setToolTip("Switch to list view")
+        else:
+            self._btn.setIcon(_paint_icon(_draw_list, color))
+            self._btn.setToolTip("Switch to gallery view")
