@@ -13,6 +13,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from numobel.ui import widgets  # noqa: E402
+from numobel.ui.widgets import Card  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -42,3 +43,14 @@ def test_view_toggle_reports_and_sets_mode(app):
     toggle.set_current("gallery")
     assert toggle.current() == "gallery"
     assert seen and seen[-1] == "gallery"
+
+
+def test_card_property(app):
+    assert Card().property("class") == "Card"
+    assert Card(raised=True).property("class") == "CardRaised"
+
+
+def test_make_chip_property(app):
+    chip = widgets.make_chip("Terracotta")
+    assert chip.property("class") == "Chip"
+    assert chip.text() == "Terracotta"

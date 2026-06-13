@@ -73,7 +73,7 @@ def swatch_pixmap(seed: str, size: int = 64, palette: theme.Palette | None = Non
     Same ``seed`` always yields the same color. Results are cached by
     ``(seed, size)``.
     """
-    size = int(size)
+    size = max(1, int(size))
     key = (seed or "", size)
     cached = _swatch_cache.get(key)
     if cached is not None:
