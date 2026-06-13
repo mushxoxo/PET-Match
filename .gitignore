@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+numobel.db
+images/*
+!images/.gitkeep
+.venv/
+venv/
+
+# Source data workbook (not tracked)
+my_excel/
