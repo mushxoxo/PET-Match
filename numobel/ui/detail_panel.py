@@ -96,8 +96,8 @@ class DetailPanel(QWidget):
         self._layout.addWidget(self._empty_label)
 
         # --- Hero photo card ---
-        photo_card = Card(raised=True)
-        photo_layout = QVBoxLayout(photo_card)
+        self._photo_card = Card(raised=True)
+        photo_layout = QVBoxLayout(self._photo_card)
         photo_layout.setContentsMargins(16, 16, 16, 16)
         photo_layout.setSpacing(10)
 
@@ -118,8 +118,7 @@ class DetailPanel(QWidget):
         photo_row.addWidget(self._remove_photo_btn)
         photo_row.addStretch(1)
         photo_layout.addWidget(self._photo_buttons)
-        self._photo_card = photo_card
-        self._layout.addWidget(photo_card)
+        self._layout.addWidget(self._photo_card)
 
         # --- Title block (color name + brand chip) ---
         self._title_card = QWidget()
@@ -314,6 +313,7 @@ class DetailPanel(QWidget):
                     Qt.KeepAspectRatio,
                     Qt.SmoothTransformation,
                 )
+                self._image_label.setStyleSheet("")
                 self._image_label.setPixmap(scaled)
                 self._image_label.setText("")
                 return
