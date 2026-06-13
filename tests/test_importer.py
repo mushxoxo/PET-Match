@@ -119,6 +119,55 @@ def test_mmt01_links_to_numobel(built):
     assert row["to_brand"] == "NUMOBEL"
 
 
+def _link_status(conn, brand_code, normalized):
+    """Return the status of a from-brand's link with a given normalized ref."""
+    row = conn.execute(
+        "SELECT cl.status FROM color_links cl "
+        "JOIN products p ON p.id = cl.from_product_id "
+        "JOIN brands b ON b.id = p.brand_id "
+        "WHERE b.code = ? AND cl.normalized = ? LIMIT 1",
+        (brand_code, normalized),
+    ).fetchone()
+    return row["status"] if row else None
+
+
+def test_sku_number_normalizes_padding_and_prefix():
+    # Pure-logic check of the matcher key.
+    assert run_import._sku_number("AT05") == "5"
+    assert run_import._sku_number("AT5") == "5"
+    assert run_import._sku_number("BOL06") == "6"
+    assert run_import._sku_number("B6") == "6"
+    assert run_import._sku_number("UT19") == "19"
+    assert run_import._sku_number("UTAB19") == "19"
+    assert run_import._sku_number("SAP130") == "130"
+    assert run_import._sku_number(None) is None
+    assert run_import._sku_number("ABC") is None
+
+
+def test_zero_padded_ref_resolves(built):
+    # SAP references AT shades as 'AT01'..'AT05'; AT SKUs are 'AT1'..'AT5'.
+    _, conn = built
+    assert _link_status(conn, "SAP", "AT05") == "resolved"
+
+
+def test_prefix_variant_refs_resolve(built):
+    # EA references UTAB as 'UT19' (stored 'UTAB19') and Bollard as 'BOL06'
+    # (stored 'B6'); both should resolve via the shade-number fallback.
+    _, conn = built
+    assert _link_status(conn, "EA", "UT19") == "resolved"
+    assert _link_status(conn, "EA", "BOL06") == "resolved"
+
+
+def test_unresolved_links_minimized(built):
+    # Before the matcher fix there were 24 unresolved links, nearly all of them
+    # format mismatches. The fallback should clear the vast majority.
+    _, conn = built
+    unresolved = conn.execute(
+        "SELECT COUNT(*) c FROM color_links WHERE status='unresolved'"
+    ).fetchone()["c"]
+    assert unresolved <= 6
+
+
 def test_external_and_resolved_links_exist(built):
     summary, conn = built
     ext = conn.execute(

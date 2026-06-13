@@ -12,6 +12,7 @@ workbook and print a summary.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -26,6 +27,29 @@ DEFAULT_EXCEL_PATH = str(
     / "my_excel"
     / "NUMOBEL_ACOUSTICS_COLOR_MAPS.xlsx"
 )
+
+_DIGITS_RE = re.compile(r"\d+")
+
+#: Sentinel marking a shade-number that maps to more than one product within a
+#: brand — such keys are never used for resolution (to avoid wrong matches).
+_AMBIGUOUS = object()
+
+
+def _sku_number(sku: str | None) -> str | None:
+    """Return a SKU's first digit-run with leading zeros stripped, or None.
+
+    References and stored SKUs sometimes agree on brand and shade number but
+    differ in formatting — zero-padding (``AT05`` vs ``AT5``) or brand-prefix
+    variant (``BOL06`` vs ``B6``, ``UT19`` vs ``UTAB19``). Since the canonical
+    brand is already known from the resolved brand id, matching on the shade
+    number alone bridges those formats: ``_sku_number('BOL06') == '6'``.
+    """
+    if not sku:
+        return None
+    m = _DIGITS_RE.search(sku)
+    if not m:
+        return None
+    return str(int(m.group()))
 
 
 def _load_rows(wb, name):
@@ -55,6 +79,9 @@ def build(db_path: str = db.DEFAULT_DB_PATH, excel_path: str = DEFAULT_EXCEL_PAT
     # --- PASS 1: products -----------------------------------------------
     # index: (brand_id, normalized_code) -> product_id
     index: dict[tuple[int, str], int] = {}
+    # num_index: (brand_id, shade_number) -> product_id | _AMBIGUOUS — a
+    # format-insensitive fallback used in pass 2 when an exact SKU match fails.
+    num_index: dict[tuple[int, str], object] = {}
     per_sheet_counts: dict[str, int] = {}
     # Keep the raw products around so pass 2 can re-walk their mapping cells.
     all_raw: list[sheets.RawProduct] = []
@@ -85,6 +112,12 @@ def build(db_path: str = db.DEFAULT_DB_PATH, excel_path: str = DEFAULT_EXCEL_PAT
             pid = cur.lastrowid
             if rp.sku:
                 index[(bid, rp.sku)] = pid
+                num = _sku_number(rp.sku)
+                if num is not None:
+                    nkey = (bid, num)
+                    # Two products in one brand sharing a shade number make the
+                    # number-only key ambiguous; mark it so it is never matched.
+                    num_index[nkey] = _AMBIGUOUS if nkey in num_index else pid
             rp._pid = pid  # type: ignore[attr-defined]
             all_raw.append(rp)
             count += 1
@@ -133,6 +166,16 @@ def build(db_path: str = db.DEFAULT_DB_PATH, excel_path: str = DEFAULT_EXCEL_PAT
                 # sheet brand or NUMOBEL: try to resolve via index
                 tbid = brand_id.get(canon)
                 to_pid = index.get((tbid, ref.normalized)) if tbid else None
+                # Fallback: match on shade number alone so refs that differ
+                # only by zero-padding or brand-prefix variant still resolve
+                # (e.g. 'AT05'->'AT5', 'BOL06'->'B6', 'UT19'->'UTAB19').
+                # NUMOBEL is excluded — its hub codes reuse numbers across
+                # prefixes (NW.../NU...), so number-only matching is ambiguous.
+                if to_pid is None and tbid and canon != sheets.HUB_BRAND:
+                    num = _sku_number(ref.normalized)
+                    cand = num_index.get((tbid, num)) if num is not None else None
+                    if cand is not None and cand is not _AMBIGUOUS:
+                        to_pid = cand
                 status = "resolved" if to_pid is not None else "unresolved"
 
             # Dedupe identical links (same from/to_product/normalized).
