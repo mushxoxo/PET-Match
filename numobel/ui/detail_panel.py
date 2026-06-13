@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -35,7 +34,9 @@ from PySide6.QtWidgets import (
 )
 
 from numobel import db, mutations, search
+from numobel.ui import delegates
 from numobel.ui.forms import ProductFormDialog
+from numobel.ui.widgets import Card, make_chip
 
 # Role storing the navigable product id on a similar-color list item.
 _NAV_ROLE = Qt.UserRole + 1
@@ -94,15 +95,18 @@ class DetailPanel(QWidget):
         self._empty_label.setStyleSheet("color: gray;")
         self._layout.addWidget(self._empty_label)
 
-        # --- Image ---
+        # --- Hero photo card ---
+        photo_card = Card(raised=True)
+        photo_layout = QVBoxLayout(photo_card)
+        photo_layout.setContentsMargins(16, 16, 16, 16)
+        photo_layout.setSpacing(10)
+
         self._image_label = QLabel()
         self._image_label.setAlignment(Qt.AlignCenter)
         self._image_label.setMinimumHeight(_THUMB_MAX)
-        self._image_label.setFrameShape(QFrame.StyledPanel)
         self._image_label.mouseDoubleClickEvent = self._on_image_double_click
-        self._layout.addWidget(self._image_label)
+        photo_layout.addWidget(self._image_label)
 
-        # --- Photo buttons ---
         self._photo_buttons = QWidget()
         photo_row = QHBoxLayout(self._photo_buttons)
         photo_row.setContentsMargins(0, 0, 0, 0)
@@ -113,23 +117,46 @@ class DetailPanel(QWidget):
         photo_row.addWidget(self._add_photo_btn)
         photo_row.addWidget(self._remove_photo_btn)
         photo_row.addStretch(1)
-        self._layout.addWidget(self._photo_buttons)
+        photo_layout.addWidget(self._photo_buttons)
+        self._photo_card = photo_card
+        self._layout.addWidget(photo_card)
 
-        # --- Title (brand + color) ---
+        # --- Title block (color name + brand chip) ---
+        self._title_card = QWidget()
+        title_layout = QVBoxLayout(self._title_card)
+        title_layout.setContentsMargins(4, 0, 4, 0)
+        title_layout.setSpacing(4)
         self._title_label = QLabel()
         self._title_label.setWordWrap(True)
-        self._title_label.setStyleSheet("font-size: 15px; font-weight: bold;")
-        self._layout.addWidget(self._title_label)
+        self._title_label.setStyleSheet("font-size: 22px; font-weight: 700;")
+        title_layout.addWidget(self._title_label)
+        self._brand_chip = make_chip("")
+        chip_row = QHBoxLayout()
+        chip_row.setContentsMargins(0, 0, 0, 0)
+        chip_row.addWidget(self._brand_chip)
+        chip_row.addStretch(1)
+        title_layout.addLayout(chip_row)
+        self._layout.addWidget(self._title_card)
 
-        # --- Field form ---
-        self._fields_box = QGroupBox("Details")
-        self._form = QFormLayout(self._fields_box)
+        # --- Details card ---
+        self._fields_box = Card()
+        fields_layout = QVBoxLayout(self._fields_box)
+        fields_layout.setContentsMargins(16, 16, 16, 16)
+        details_title = QLabel("Details")
+        details_title.setStyleSheet("font-weight: 600;")
+        fields_layout.addWidget(details_title)
+        self._form = QFormLayout()
         self._form.setLabelAlignment(Qt.AlignRight)
+        fields_layout.addLayout(self._form)
         self._layout.addWidget(self._fields_box)
 
-        # --- Similar colors ---
-        self._similar_box = QGroupBox("Similar Colors")
+        # --- Similar colors card ---
+        self._similar_box = Card()
         sim_layout = QVBoxLayout(self._similar_box)
+        sim_layout.setContentsMargins(16, 16, 16, 16)
+        similar_title = QLabel("Similar Colors")
+        similar_title.setStyleSheet("font-weight: 600;")
+        sim_layout.addWidget(similar_title)
         self._similar_hint = QLabel(
             "The whole color family is shown. Double-click a member to jump to "
             "it."
@@ -137,13 +164,15 @@ class DetailPanel(QWidget):
         self._similar_hint.setStyleSheet("color: gray; font-size: 11px;")
         sim_layout.addWidget(self._similar_hint)
         self._similar_list = QListWidget()
+        self._similar_list.setItemDelegate(
+            delegates.SimilarColorDelegate(self._similar_list)
+        )
         self._similar_list.itemDoubleClicked.connect(self._on_similar_double)
         self._similar_list.itemSelectionChanged.connect(
             self._update_mapping_buttons
         )
         sim_layout.addWidget(self._similar_list)
 
-        # --- Mapping editor buttons ---
         map_row = QHBoxLayout()
         self._add_link_btn = QPushButton("Add Similar Color…")
         self._add_link_btn.clicked.connect(self._on_add_link)
@@ -192,9 +221,8 @@ class DetailPanel(QWidget):
     # ------------------------------------------------------------------ #
     def _set_content_visible(self, visible: bool) -> None:
         self._empty_label.setVisible(not visible)
-        self._image_label.setVisible(visible)
-        self._photo_buttons.setVisible(visible)
-        self._title_label.setVisible(visible)
+        self._photo_card.setVisible(visible)
+        self._title_card.setVisible(visible)
         self._fields_box.setVisible(visible)
         self._similar_box.setVisible(visible)
 
@@ -209,7 +237,8 @@ class DetailPanel(QWidget):
         brand_str = brand
         if name:
             brand_str = f"{brand} — {name}" if brand else name
-        self._title_label.setText(f"{color}\n{brand_str}".strip())
+        self._title_label.setText(color)
+        self._brand_chip.setText(brand_str or "—")
 
     def _populate_fields(self, product: sqlite3.Row) -> None:
         # Clear existing rows.
