@@ -16,7 +16,8 @@ from PySide6.QtWidgets import (
 )
 
 from numobel import db
-from numobel.importer.run_import import build
+from numobel.exporter.run_export import export
+from numobel.importer.snapshot import import_workbook
 from numobel.ui import theme
 from numobel.ui.audit_tab import AuditTab
 from numobel.ui.catalog_tab import CatalogTab
@@ -107,6 +108,9 @@ class MainWindow(QMainWindow):
         import_action = QAction("&Import / Replace catalog…", self)
         import_action.triggered.connect(lambda: self._import_catalog())
         catalog_menu.addAction(import_action)
+        export_action = QAction("&Export catalog…", self)
+        export_action.triggered.connect(self._export_catalog)
+        catalog_menu.addAction(export_action)
 
         view_menu = self.menuBar().addMenu("&View")
         toggle = QAction("Toggle &Dark / Light Theme", self)
@@ -148,7 +152,9 @@ class MainWindow(QMainWindow):
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            summary = build(excel_path=path, conn=self._conn)
+            # Auto-detects snapshot vs. original master workbook and routes
+            # accordingly; both replace the existing catalog.
+            summary = import_workbook(excel_path=path, conn=self._conn)
             # build() leaves resolved links inspectable; migrate() folds them
             # into transitive color groups on the same live connection.
             db.migrate(self._conn)
@@ -178,6 +184,56 @@ class MainWindow(QMainWindow):
             f"{summary['prices']} price rows.\n\n"
             f"Links — resolved: {links['resolved']}, "
             f"unresolved: {links['unresolved']}, external: {links['external']}.",
+        )
+
+    # ------------------------------------------------------------------ #
+    # Export
+    # ------------------------------------------------------------------ #
+    def _export_catalog(self) -> None:
+        """Write the whole catalog to a single shareable ``.xlsx`` snapshot.
+
+        The snapshot embeds every table plus attached photos, so a colleague can
+        import it (via the same Import action, which auto-detects the format) and
+        continue working from the exact current state.
+        """
+        from PySide6.QtWidgets import QFileDialog
+
+        if not self._has_catalog():
+            QMessageBox.information(
+                self,
+                "Nothing to export",
+                "The catalog is empty. Import or add products first.",
+            )
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export catalog", "numobel-catalog.xlsx", "Excel workbook (*.xlsx)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            summary = export(excel_path=path, conn=self._conn)
+        except Exception as exc:  # noqa: BLE001 — surface any export failure
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(
+                self,
+                "Export failed",
+                f"The catalog could not be exported.\n\n{type(exc).__name__}: {exc}",
+            )
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        QMessageBox.information(
+            self,
+            "Export complete",
+            f"Exported {summary['total_products']} products, "
+            f"{summary['prices']} price rows and {summary['images']} photos to:\n\n"
+            f"{path}",
         )
 
     # ------------------------------------------------------------------ #
