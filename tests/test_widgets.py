@@ -54,3 +54,11 @@ def test_make_chip_property(app):
     chip = widgets.make_chip("Terracotta")
     assert chip.property("class") == "Chip"
     assert chip.text() == "Terracotta"
+
+
+def test_swatch_pixmap_uses_explicit_color(app):
+    from PySide6.QtGui import QColor
+
+    pix = widgets.swatch_pixmap("anything", 40, color=QColor("#ff0000"))
+    center = pix.toImage().pixelColor(20, 20)
+    assert (center.red(), center.green(), center.blue()) == (255, 0, 0)

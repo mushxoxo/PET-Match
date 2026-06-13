@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 from numobel.ui import theme
 
 # Cache generated swatches by (seed, size); pastel color is theme-independent.
-_swatch_cache: dict[tuple[str, int], QPixmap] = {}
+_swatch_cache: dict[tuple[str, int, int], QPixmap] = {}
 
 
 class Card(QFrame):
@@ -67,14 +67,21 @@ def _initials(seed: str) -> str:
     return (parts[0][0] + parts[1][0]).upper()
 
 
-def swatch_pixmap(seed: str, size: int = 64, palette: theme.Palette | None = None) -> QPixmap:
-    """Return a deterministic rounded pastel swatch for ``seed``.
+def swatch_pixmap(
+    seed: str,
+    size: int = 64,
+    palette: theme.Palette | None = None,
+    color: QColor | None = None,
+) -> QPixmap:
+    """Return a deterministic rounded swatch for ``seed``.
 
-    Same ``seed`` always yields the same color. Results are cached by
-    ``(seed, size)``.
+    When ``color`` is given it is used as the fill; otherwise the fill is the
+    deterministic hash color of ``seed``. Results are cached by
+    ``(seed, size, fill)``.
     """
     size = max(1, int(size))
-    key = (seed or "", size)
+    fill = color if color is not None else _swatch_color(seed)
+    key = (seed or "", size, fill.rgba())
     cached = _swatch_cache.get(key)
     if cached is not None:
         return cached
@@ -85,18 +92,19 @@ def swatch_pixmap(seed: str, size: int = 64, palette: theme.Palette | None = Non
     try:
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(_swatch_color(seed)))
+        painter.setBrush(QBrush(fill))
         radius = size * 0.28
         painter.drawRoundedRect(QRectF(0, 0, size, size), radius, radius)
 
-        initials = _initials(seed)
-        if initials:
-            painter.setPen(QColor(60, 50, 44, 150))
-            font = QFont()
-            font.setPixelSize(max(10, int(size * 0.34)))
-            font.setBold(True)
-            painter.setFont(font)
-            painter.drawText(pix.rect(), Qt.AlignCenter, initials)
+        if color is None:
+            initials = _initials(seed)
+            if initials:
+                painter.setPen(QColor(60, 50, 44, 150))
+                font = QFont()
+                font.setPixelSize(max(10, int(size * 0.34)))
+                font.setBold(True)
+                painter.setFont(font)
+                painter.drawText(pix.rect(), Qt.AlignCenter, initials)
     finally:
         painter.end()
 

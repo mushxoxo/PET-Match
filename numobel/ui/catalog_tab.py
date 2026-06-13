@@ -25,9 +25,10 @@ from PySide6.QtWidgets import (
 )
 
 from numobel import search
-from numobel.ui import delegates
+from numobel.ui import colors, delegates
 from numobel.ui.delegates import (
     BRAND_ROLE,
+    COLOR_ROLE,
     ID_ROLE,
     NAME_ROLE,
     SEED_ROLE,
@@ -194,6 +195,7 @@ class CatalogTab(QWidget):
             item.setData(brand, BRAND_ROLE)
             item.setData(sub, SUB_ROLE)
             item.setData(row["color_name"] or row["sku"] or "", SEED_ROLE)
+            item.setData(colors.swatch_color(self._conn, row).name(), COLOR_ROLE)
             self.results_model.appendRow(item)
 
     def _on_selection_changed(self, *_args) -> None:

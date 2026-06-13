@@ -20,6 +20,7 @@ NAME_ROLE = Qt.UserRole + 2
 BRAND_ROLE = Qt.UserRole + 3
 SUB_ROLE = Qt.UserRole + 4   # "shade · thickness" muted line
 SEED_ROLE = Qt.UserRole + 5  # swatch seed (color name or sku)
+COLOR_ROLE = Qt.UserRole + 6  # resolved swatch color (#rrggbb), optional
 
 # Roles used by the similar-color list (mirrors detail_panel's status role).
 SIM_STATUS_ROLE = Qt.UserRole + 3
@@ -64,7 +65,9 @@ class ProductListDelegate(QStyledItemDelegate):
 
         # Thumbnail / swatch.
         seed = index.data(SEED_ROLE) or index.data(NAME_ROLE) or ""
-        thumb = widgets.swatch_pixmap(str(seed), self._THUMB, pal)
+        color_hex = index.data(COLOR_ROLE)
+        color = QColor(color_hex) if color_hex else None
+        thumb = widgets.swatch_pixmap(str(seed), self._THUMB, pal, color=color)
         ty = rect.top() + (rect.height() - self._THUMB) // 2
         painter.drawPixmap(rect.left() + 8, ty, thumb)
 
@@ -130,7 +133,9 @@ class ProductGalleryDelegate(QStyledItemDelegate):
         # Swatch.
         thumb = card.width() - 24
         seed = index.data(SEED_ROLE) or index.data(NAME_ROLE) or ""
-        pix = widgets.swatch_pixmap(str(seed), thumb, pal)
+        color_hex = index.data(COLOR_ROLE)
+        color = QColor(color_hex) if color_hex else None
+        pix = widgets.swatch_pixmap(str(seed), thumb, pal, color=color)
         painter.drawPixmap(card.left() + 12, card.top() + 12, pix)
 
         # Name.
@@ -184,7 +189,9 @@ class SimilarColorDelegate(QStyledItemDelegate):
 
         if kind == "member":
             seed = text.split()[-1] if text else text
-            thumb = widgets.swatch_pixmap(str(seed), self._THUMB, pal)
+            color_hex = index.data(COLOR_ROLE)
+            color = QColor(color_hex) if color_hex else None
+            thumb = widgets.swatch_pixmap(str(seed), self._THUMB, pal, color=color)
             ty = rect.top() + (rect.height() - self._THUMB) // 2
             painter.drawPixmap(rect.left() + 6, ty, thumb)
             text_left = rect.left() + 6 + self._THUMB + 10
