@@ -16,8 +16,10 @@ from typing import Callable, Optional
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -69,11 +71,14 @@ class DetailPanel(QWidget):
         conn: sqlite3.Connection,
         on_navigate: Optional[Callable[[int], None]] = None,
         parent: QWidget | None = None,
+        on_product_changed: Optional[Callable[[int], None]] = None,
     ):
         super().__init__(parent)
         self._conn = conn
         self._on_navigate = on_navigate
+        self._on_product_changed = on_product_changed
         self._product_id: Optional[int] = None
+        self._editing = False
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -147,6 +152,25 @@ class DetailPanel(QWidget):
         self._form = QFormLayout()
         self._form.setLabelAlignment(Qt.AlignRight)
         self._details_section.add_layout(self._form)
+
+        # Edit / Save / Cancel footer at the bottom of the Details body.
+        actions_row = QHBoxLayout()
+        actions_row.setContentsMargins(0, 8, 0, 0)
+        actions_row.addStretch(1)
+        self._edit_btn = QPushButton("Edit")
+        self._edit_btn.clicked.connect(self._enter_edit)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.clicked.connect(self._cancel_edit)
+        self._save_btn = QPushButton("Save")
+        self._save_btn.setProperty("class", "AccentButton")
+        self._save_btn.clicked.connect(self._save_edit)
+        actions_row.addWidget(self._edit_btn)
+        actions_row.addWidget(self._cancel_btn)
+        actions_row.addWidget(self._save_btn)
+        self._cancel_btn.setVisible(False)
+        self._save_btn.setVisible(False)
+        self._details_section.add_layout(actions_row)
+
         self._layout.addWidget(self._fields_box)
 
         # --- Similar colors card (collapsible, expanded by default) ---
@@ -208,6 +232,11 @@ class DetailPanel(QWidget):
         self._product_id = product_id
         self._set_content_visible(True)
 
+        self._editing = False
+        self._edit_btn.setVisible(True)
+        self._save_btn.setVisible(False)
+        self._cancel_btn.setVisible(False)
+
         self._populate_title(product)
         self._populate_fields(product)
         self._populate_image(product)
@@ -268,6 +297,90 @@ class DetailPanel(QWidget):
         extra = product["extra_json"]
         for key, value in self._parse_extra(extra).items():
             add(str(key), value)
+
+    def _build_edit_form(self, product: sqlite3.Row) -> None:
+        """Replace the read-only Details form with editable inputs."""
+        while self._form.rowCount():
+            self._form.removeRow(0)
+
+        self._edit_brand = QComboBox()
+        for brand in search.list_brands(self._conn):
+            label = brand["code"]
+            if brand["name"]:
+                label = f"{brand['code']} — {brand['name']}"
+            self._edit_brand.addItem(label, brand["id"])
+        idx = self._edit_brand.findData(product["brand_id"])
+        if idx >= 0:
+            self._edit_brand.setCurrentIndex(idx)
+
+        self._edit_sku = QLineEdit(product["sku"] or "")
+        self._edit_color = QLineEdit(product["color_name"] or "")
+        self._edit_shade = QLineEdit(product["shade_no"] or "")
+        self._edit_thickness = QDoubleSpinBox()
+        self._edit_thickness.setRange(0.0, 1000.0)
+        self._edit_thickness.setDecimals(2)
+        self._edit_thickness.setSingleStep(0.1)
+        self._edit_thickness.setSpecialValueText("—")
+        self._edit_thickness.setValue(
+            0.0 if product["thickness"] is None else float(product["thickness"])
+        )
+        self._edit_category = QLineEdit(product["category"] or "")
+        self._edit_self_label = QLineEdit(product["self_label"] or "")
+
+        self._form.addRow("Brand:", self._edit_brand)
+        self._form.addRow("SKU:", self._edit_sku)
+        self._form.addRow("Color Name:", self._edit_color)
+        self._form.addRow("Shade No:", self._edit_shade)
+        self._form.addRow("Thickness:", self._edit_thickness)
+        self._form.addRow("Category:", self._edit_category)
+        self._form.addRow("Self Label:", self._edit_self_label)
+
+    def _enter_edit(self) -> None:
+        if self._product_id is None:
+            return
+        product = search.get_product(self._conn, self._product_id)
+        if product is None:
+            return
+        self._editing = True
+        self._details_section.set_expanded(True)
+        self._build_edit_form(product)
+        self._edit_btn.setVisible(False)
+        self._save_btn.setVisible(True)
+        self._cancel_btn.setVisible(True)
+
+    def _cancel_edit(self) -> None:
+        self._editing = False
+        self._edit_btn.setVisible(True)
+        self._save_btn.setVisible(False)
+        self._cancel_btn.setVisible(False)
+        if self._product_id is not None:
+            product = search.get_product(self._conn, self._product_id)
+            if product is not None:
+                self._populate_fields(product)
+
+    def _save_edit(self) -> None:
+        if self._product_id is None:
+            return
+        thickness = self._edit_thickness.value()
+        try:
+            mutations.update_product(
+                self._conn,
+                self._product_id,
+                brand_id=self._edit_brand.currentData(),
+                sku=self._edit_sku.text(),
+                color_name=self._edit_color.text(),
+                shade_no=self._edit_shade.text(),
+                thickness=thickness if thickness > 0 else None,
+                category=self._edit_category.text(),
+                self_label=self._edit_self_label.text(),
+            )
+        except mutations.MutationError as err:
+            QMessageBox.warning(self, "Cannot save changes", str(err))
+            return
+        pid = self._product_id
+        self.set_product(pid)  # resets edit state + re-renders read-only
+        if self._on_product_changed is not None:
+            self._on_product_changed(pid)
 
     def _brand_text(self, product: sqlite3.Row) -> str:
         code = (product["brand_code"] or "").strip()

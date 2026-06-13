@@ -58,3 +58,28 @@ def test_expanded_details_sticky_across_products(app, conn):
     panel._details_section.set_expanded(True)
     panel.set_product(20)
     assert panel._details_section.is_expanded() is True
+
+
+def test_edit_saves_through_mutation_and_notifies(app, conn):
+    changed = []
+    panel = DetailPanel(conn, on_product_changed=changed.append)
+    panel.set_product(10)
+    panel._enter_edit()
+    assert panel._edit_brand.count() >= 2  # brand reassignment combo present
+    panel._edit_color.setText("Renamed Grey")
+    panel._save_edit()
+    row = conn.execute("SELECT color_name FROM products WHERE id=10").fetchone()
+    assert row["color_name"] == "Renamed Grey"
+    assert changed == [10]
+    assert panel._editing is False
+
+
+def test_cancel_edit_discards_changes(app, conn):
+    panel = DetailPanel(conn)
+    panel.set_product(20)
+    panel._enter_edit()
+    panel._edit_color.setText("Should Not Persist")
+    panel._cancel_edit()
+    row = conn.execute("SELECT color_name FROM products WHERE id=20").fetchone()
+    assert row["color_name"] == "Ocean Blue"
+    assert panel._editing is False

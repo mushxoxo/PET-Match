@@ -60,7 +60,11 @@ class CatalogTab(QWidget):
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self._build_views())
 
-        self.detail_panel = DetailPanel(self._conn, on_navigate=self.load_product)
+        self.detail_panel = DetailPanel(
+            self._conn,
+            on_navigate=self.load_product,
+            on_product_changed=self._on_product_edited,
+        )
         splitter.addWidget(self.detail_panel)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
@@ -206,6 +210,11 @@ class CatalogTab(QWidget):
         if not indexes:
             return None
         return self.results_model.itemFromIndex(indexes[0]).data(ID_ROLE)
+
+    def _on_product_edited(self, product_id: int) -> None:
+        """Re-run the search (refreshes name/swatch) and keep the row selected."""
+        self._run_search()
+        self.load_product(product_id)
 
     # ------------------------------------------------------------------ #
     # Public navigation + creation API (used by the window shell/menu)
