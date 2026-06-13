@@ -38,7 +38,7 @@ from numobel.ui.forms import BrandFormDialog, ProductFormDialog
 from numobel.ui.widgets import Card, ViewToggle
 
 _SCOPE_MAP = [("All", "all"), ("Color", "color"), ("Brand", "brand")]
-# (label, sort key function over a results dict)
+# Labels matching the if/elif dispatch in _sorted().
 _SORT_OPTIONS = ["Color", "Brand", "Thickness"]
 _SEARCH_LIMIT = 5000
 
@@ -137,11 +137,12 @@ class CatalogTab(QWidget):
         self.gallery_view.setSelectionMode(QListView.SingleSelection)
         self.gallery_view.setMovement(QListView.Static)
 
-        # Share ONE selection model so the toggle preserves selection.
-        self.gallery_view.setSelectionModel(self.list_view.selectionModel())
-        self.list_view.selectionModel().selectionChanged.connect(
-            self._on_selection_changed
-        )
+        # Share ONE selection model, owned by this widget so teardown order
+        # between the two views can't free it twice.
+        self._sel_model = QItemSelectionModel(self.results_model, self)
+        self.list_view.setSelectionModel(self._sel_model)
+        self.gallery_view.setSelectionModel(self._sel_model)
+        self._sel_model.selectionChanged.connect(self._on_selection_changed)
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self.list_view)     # index 0
@@ -166,7 +167,7 @@ class CatalogTab(QWidget):
         self._populate_results(self._sorted(rows))
 
     def _sorted(self, rows):
-        key = self.sort_combo.currentText() if hasattr(self, "sort_combo") else "Color"
+        key = self.sort_combo.currentText()
         if key == "Brand":
             return sorted(rows, key=lambda r: (r["brand_code"] or "").lower())
         if key == "Thickness":
