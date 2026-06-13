@@ -96,15 +96,14 @@ def swatch_pixmap(
         radius = size * 0.28
         painter.drawRoundedRect(QRectF(0, 0, size, size), radius, radius)
 
-        if color is None:
-            initials = _initials(seed)
-            if initials:
-                painter.setPen(QColor(60, 50, 44, 150))
-                font = QFont()
-                font.setPixelSize(max(10, int(size * 0.34)))
-                font.setBold(True)
-                painter.setFont(font)
-                painter.drawText(pix.rect(), Qt.AlignCenter, initials)
+        initials = _initials(seed)
+        if initials:
+            painter.setPen(QColor(60, 50, 44, 150))
+            font = QFont()
+            font.setPixelSize(max(10, int(size * 0.34)))
+            font.setBold(True)
+            painter.setFont(font)
+            painter.drawText(pix.rect(), Qt.AlignCenter, initials)
     finally:
         painter.end()
 
