@@ -57,8 +57,30 @@ def _load_rows(wb, name):
     return list(wb[name].iter_rows(values_only=True))
 
 
-def build(db_path: str = db.DEFAULT_DB_PATH, excel_path: str = DEFAULT_EXCEL_PATH) -> dict:
-    conn = db.connect(db_path)
+def build(
+    db_path: str = db.DEFAULT_DB_PATH,
+    excel_path: str = DEFAULT_EXCEL_PATH,
+    conn=None,
+) -> dict:
+    """Build the catalog from a workbook.
+
+    When ``conn`` is given (e.g. the running app's live connection) it is used
+    and left open, so the caller sees the new rows immediately and there is no
+    second connection competing for the database lock. Otherwise a connection
+    is opened from ``db_path`` and closed before returning.
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = db.connect(db_path)
+
+    try:
+        return _build(conn, excel_path)
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def _build(conn, excel_path: str) -> dict:
     db.create_schema(conn)
     db.reset_catalog(conn)
 
@@ -220,7 +242,6 @@ def build(db_path: str = db.DEFAULT_DB_PATH, excel_path: str = DEFAULT_EXCEL_PAT
         "total_links": sum(tallies.values()),
         "prices": len(price_rows),
     }
-    conn.close()
     return summary
 
 

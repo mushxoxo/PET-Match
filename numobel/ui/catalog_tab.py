@@ -232,6 +232,11 @@ class CatalogTab(QWidget):
                 break
         self.detail_panel.set_product(product_id)
 
+    def refresh(self) -> None:
+        """Reload the brand filter and results — used after a catalog import."""
+        self.reload_brand_filter()
+        self._run_search()
+
     def reload_brand_filter(self) -> None:
         current = self.brand_combo.currentData()
         self.brand_combo.blockSignals(True)

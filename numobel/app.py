@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import sys
 
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication
 
 from numobel import db
 
@@ -13,28 +12,19 @@ from numobel import db
 def main() -> int:
     """Create the QApplication, open the DB, and show the main window.
 
-    If the database file is missing, show a message box telling the user to
-    run the importer first, then exit gracefully.
+    The database is created on demand: ``connect()`` makes the file if absent
+    and ``migrate()`` (via ``create_schema()``) lays down the schema, so a
+    fresh install opens to an empty catalog and the onboarding screen prompts
+    the user to import a workbook.
     """
     app = QApplication(sys.argv)
 
-    if not os.path.isfile(db.DEFAULT_DB_PATH):
-        QMessageBox.critical(
-            None,
-            "Database not found",
-            "No catalog database was found at:\n"
-            f"{db.DEFAULT_DB_PATH}\n\n"
-            "Please import the catalog first by running:\n"
-            "    python -m numobel.importer.run_import",
-        )
-        return 1
-
     conn = db.connect()
-    # Bring older databases up to the current schema (adds color groups and
-    # folds legacy resolved links into transitive color families).
+    # Create the schema on a fresh DB and bring older databases up to the
+    # current one (adds color groups and folds legacy resolved links into
+    # transitive color families).
     db.migrate(conn)
 
-    # Imported lazily so a missing DB exits before importing the UI stack.
     from numobel.ui import theme
     from numobel.ui.main_window import MainWindow
 

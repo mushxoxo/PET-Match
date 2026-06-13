@@ -105,6 +105,10 @@ class PriceTab(QWidget):
     # ------------------------------------------------------------------ #
     # Population
     # ------------------------------------------------------------------ #
+    def refresh(self) -> None:
+        """Reload prices from the DB — used after a catalog import."""
+        self._populate()
+
     def _populate(self) -> None:
         rows = search.get_prices(self._conn)
         discounts = [r["discount"] for r in rows]
