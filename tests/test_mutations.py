@@ -240,3 +240,42 @@ def test_audit_log_newest_first():
     rows = audit.get_audit_log(conn)
     assert rows[0]["entity_id"] == 20
     assert rows[1]["entity_id"] == 10
+
+
+# --- update_product ------------------------------------------------------ #
+def test_update_product_changes_fields_and_logs():
+    conn = _make_db()
+    mutations.update_product(
+        conn, 10, color_name="Renamed", thickness=2.5, category="Greys"
+    )
+    row = conn.execute("SELECT * FROM products WHERE id=10").fetchone()
+    assert row["color_name"] == "Renamed"
+    assert row["thickness"] == 2.5
+    assert row["category"] == "Greys"
+    assert "update_product" in _audit_actions(conn)
+
+
+def test_update_product_rejects_sku_clash_in_brand():
+    conn = _make_db()
+    # Products 20 (BA14) and 30 (BA15) are both brand 2.
+    with pytest.raises(mutations.MutationError):
+        mutations.update_product(conn, 20, sku="BA15")
+
+
+def test_update_product_can_reassign_brand():
+    conn = _make_db()
+    mutations.update_product(conn, 10, brand_id=2, sku="AT5", color_name="Gothic Grey")
+    row = conn.execute("SELECT brand_id FROM products WHERE id=10").fetchone()
+    assert row["brand_id"] == 2
+
+
+def test_update_product_requires_sku_or_name():
+    conn = _make_db()
+    with pytest.raises(mutations.MutationError):
+        mutations.update_product(conn, 10, sku="", color_name="")
+
+
+def test_update_product_bad_product():
+    conn = _make_db()
+    with pytest.raises(mutations.MutationError):
+        mutations.update_product(conn, 999, color_name="X")
