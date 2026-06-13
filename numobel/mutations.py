@@ -176,6 +176,11 @@ def update_product(
     unique (excluding this product), and at least one of SKU/color name is set.
     Logs the old->new diff and commits atomically.
     """
+    # IMPORTANT: this is a FULL-SET update — every column is overwritten with the
+    # passed value (omitted/None text fields become NULL). It is meant to be
+    # called from the detail-panel edit form, which always submits all fields.
+    # Do not call it with a partial field set expecting unspecified fields to be
+    # left unchanged.
     old = _require_product(conn, product_id)
 
     target_brand_id = old["brand_id"] if brand_id is None else int(brand_id)
