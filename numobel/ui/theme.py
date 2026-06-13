@@ -229,21 +229,6 @@ QPushButton[class="SidebarItem"]:checked {{
     font-weight: 600;
 }}
 
-/* ---- Segmented view toggle ---- */
-QPushButton[class="Segment"] {{
-    background-color: {p.surface};
-    border: 1px solid {p.border};
-    border-radius: 12px;
-    padding: 6px 14px;
-    color: {p.text_muted};
-}}
-QPushButton[class="Segment"]:checked {{
-    background-color: {p.accent_soft};
-    color: {p.text};
-    font-weight: 600;
-    border: 1px solid {p.accent};
-}}
-
 /* ---- Tables ---- */
 QTableView {{
     background-color: {p.surface};

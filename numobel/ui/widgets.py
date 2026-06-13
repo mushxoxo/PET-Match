@@ -1,8 +1,8 @@
 """Small reusable building blocks for the clay UI.
 
 ``Card`` (shadowed frame), ``make_chip`` (pill label), ``swatch_pixmap``
-(deterministic generated color placeholder), and ``ViewToggle`` (segmented
-List/Gallery control). Each is independently testable.
+(deterministic generated color placeholder), and ``ViewToggle`` (single-button
+List/Gallery toggle). Each is independently testable.
 """
 
 from __future__ import annotations
