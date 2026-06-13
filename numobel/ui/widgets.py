@@ -1,29 +1,38 @@
 """Small reusable building blocks for the clay UI.
 
 ``Card`` (shadowed frame), ``make_chip`` (pill label), ``swatch_pixmap``
-(deterministic generated color placeholder), and ``ViewToggle`` (segmented
-List/Gallery control). Each is independently testable.
+(deterministic generated color placeholder), and ``ViewToggle`` (single-button
+List/Gallery toggle). Each is independently testable.
 """
 
 from __future__ import annotations
 
 import hashlib
 
-from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPixmap
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QIcon,
+    QPainter,
+    QPen,
+    QPixmap,
+    QPolygonF,
+)
 from PySide6.QtWidgets import (
-    QButtonGroup,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QPushButton,
+    QToolButton,
+    QVBoxLayout,
     QWidget,
 )
 
 from numobel.ui import theme
 
 # Cache generated swatches by (seed, size); pastel color is theme-independent.
-_swatch_cache: dict[tuple[str, int], QPixmap] = {}
+_swatch_cache: dict[tuple[str, int, int], QPixmap] = {}
 
 
 class Card(QFrame):
@@ -67,14 +76,21 @@ def _initials(seed: str) -> str:
     return (parts[0][0] + parts[1][0]).upper()
 
 
-def swatch_pixmap(seed: str, size: int = 64, palette: theme.Palette | None = None) -> QPixmap:
-    """Return a deterministic rounded pastel swatch for ``seed``.
+def swatch_pixmap(
+    seed: str,
+    size: int = 64,
+    palette: theme.Palette | None = None,
+    color: QColor | None = None,
+) -> QPixmap:
+    """Return a deterministic rounded swatch for ``seed``.
 
-    Same ``seed`` always yields the same color. Results are cached by
-    ``(seed, size)``.
+    When ``color`` is given it is used as the fill; otherwise the fill is the
+    deterministic hash color of ``seed``. Results are cached by
+    ``(seed, size, fill)``.
     """
     size = max(1, int(size))
-    key = (seed or "", size)
+    fill = color if color is not None else _swatch_color(seed)
+    key = (seed or "", size, fill.rgba())
     cached = _swatch_cache.get(key)
     if cached is not None:
         return cached
@@ -85,7 +101,7 @@ def swatch_pixmap(seed: str, size: int = 64, palette: theme.Palette | None = Non
     try:
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(_swatch_color(seed)))
+        painter.setBrush(QBrush(fill))
         radius = size * 0.28
         painter.drawRoundedRect(QRectF(0, 0, size, size), radius, radius)
 
@@ -104,43 +120,166 @@ def swatch_pixmap(seed: str, size: int = 64, palette: theme.Palette | None = Non
     return pix
 
 
-class ViewToggle(QWidget):
-    """Segmented List/Gallery control. Emits ``changed(mode)``."""
+def _paint_icon(draw, color: QColor, size: int = 18) -> QIcon:
+    """Build a QIcon by running ``draw(painter, color, size)`` on a pixmap."""
+    pix = QPixmap(size, size)
+    pix.fill(Qt.transparent)
+    painter = QPainter(pix)
+    try:
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        draw(painter, color, size)
+    finally:
+        painter.end()
+    return QIcon(pix)
 
-    changed = Signal(str)  # "list" or "gallery"
+
+def _draw_list(painter: QPainter, color: QColor, size: int) -> None:
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QBrush(color))
+    bar_h = max(2, size // 7)
+    gap = (size - 3 * bar_h) / 4
+    for i in range(3):
+        y = gap + i * (bar_h + gap)
+        painter.drawRoundedRect(QRectF(1, y, size - 2, bar_h), 1.5, 1.5)
+
+
+def _draw_grid(painter: QPainter, color: QColor, size: int) -> None:
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QBrush(color))
+    cell = (size - 3) / 2
+    for cx in (1, 2 + cell):
+        for cy in (1, 2 + cell):
+            painter.drawRoundedRect(QRectF(cx, cy, cell, cell), 2, 2)
+
+
+class ViewToggle(QWidget):
+    """Single icon button that flips between list and gallery. Emits ``changed``.
+
+    Public API preserved from the old segmented control: ``changed(mode)``,
+    ``current()``, ``set_current(mode)`` with ``mode`` in ``{"list","gallery"}``.
+    The button shows the *current* mode's icon; its tooltip names the target.
+    """
+
+    changed = Signal(str)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
+        self._mode = "list"
+
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(4)
+        self._btn = QToolButton()
+        self._btn.setCursor(Qt.PointingHandCursor)
+        self._btn.setIconSize(QSize(18, 18))
+        self._btn.clicked.connect(self._on_click)
+        row.addWidget(self._btn)
+        self._refresh_icon()
 
-        self._list_btn = self._segment("List")
-        self._gallery_btn = self._segment("Gallery")
-        self._list_btn.setChecked(True)
-
-        self._group = QButtonGroup(self)
-        self._group.setExclusive(True)
-        self._group.addButton(self._list_btn, 0)
-        self._group.addButton(self._gallery_btn, 1)
-        self._group.idClicked.connect(self._on_clicked)
-
-        row.addWidget(self._list_btn)
-        row.addWidget(self._gallery_btn)
-
-    def _segment(self, text: str) -> QPushButton:
-        btn = QPushButton(text)
-        btn.setCheckable(True)
-        btn.setProperty("class", "Segment")
-        return btn
-
-    def _on_clicked(self, idx: int) -> None:
-        self.changed.emit("gallery" if idx == 1 else "list")
+    def _on_click(self) -> None:
+        self.set_current("gallery" if self._mode == "list" else "list")
 
     def current(self) -> str:
-        return "gallery" if self._gallery_btn.isChecked() else "list"
+        return self._mode
 
     def set_current(self, mode: str) -> None:
-        gallery = mode == "gallery"
-        (self._gallery_btn if gallery else self._list_btn).setChecked(True)
-        self.changed.emit("gallery" if gallery else "list")
+        self._mode = "gallery" if mode == "gallery" else "list"
+        self._refresh_icon()
+        self.changed.emit(self._mode)
+
+    def _refresh_icon(self) -> None:
+        color = QColor(theme.current_palette().text)
+        if self._mode == "gallery":
+            self._btn.setIcon(_paint_icon(_draw_grid, color))
+            self._btn.setToolTip("Switch to list view")
+        else:
+            self._btn.setIcon(_paint_icon(_draw_list, color))
+            self._btn.setToolTip("Switch to gallery view")
+
+
+def _chevron_icon(color: QColor, *, down: bool, size: int = 12) -> QIcon:
+    """A small painted chevron (down = expanded, right = collapsed)."""
+    pix = QPixmap(size, size)
+    pix.fill(Qt.transparent)
+    painter = QPainter(pix)
+    try:
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        pen = QPen(color)
+        pen.setWidth(2)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        m = size / 2
+        if down:
+            pts = [QPointF(3, m - 1), QPointF(m, m + 2), QPointF(size - 3, m - 1)]
+        else:
+            pts = [QPointF(m - 1, 3), QPointF(m + 2, m), QPointF(m - 1, size - 3)]
+        painter.drawPolyline(QPolygonF(pts))
+    finally:
+        painter.end()
+    return QIcon(pix)
+
+
+class CollapsibleSection(QWidget):
+    """A titled section whose body can be collapsed.
+
+    Header is a painted-chevron + title button; clicking toggles the body. Use
+    :meth:`add_widget` / :meth:`add_layout` to fill the body. Emits
+    ``toggled(expanded)``.
+    """
+
+    toggled = Signal(bool)
+
+    def __init__(
+        self,
+        title: str,
+        parent: QWidget | None = None,
+        *,
+        expanded: bool = True,
+    ):
+        super().__init__(parent)
+        self._expanded = expanded
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self._header = QToolButton()
+        self._header.setText(title)
+        self._header.setCursor(Qt.PointingHandCursor)
+        self._header.setProperty("class", "SectionHeader")
+        self._header.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self._header.setIconSize(QSize(12, 12))
+        self._header.clicked.connect(self._on_click)
+        outer.addWidget(self._header)
+
+        self._body = QWidget()
+        self._body_layout = QVBoxLayout(self._body)
+        self._body_layout.setContentsMargins(0, 8, 0, 0)
+        outer.addWidget(self._body)
+
+        self._apply()
+
+    def add_widget(self, widget: QWidget) -> None:
+        self._body_layout.addWidget(widget)
+
+    def add_layout(self, layout) -> None:
+        self._body_layout.addLayout(layout)
+
+    def is_expanded(self) -> bool:
+        return self._expanded
+
+    def set_expanded(self, value: bool) -> None:
+        value = bool(value)
+        if value == self._expanded:
+            return
+        self._expanded = value
+        self._apply()
+        self.toggled.emit(self._expanded)
+
+    def _on_click(self) -> None:
+        self.set_expanded(not self._expanded)
+
+    def _apply(self) -> None:
+        self._body.setVisible(self._expanded)
+        color = QColor(theme.current_palette().text)
+        self._header.setIcon(_chevron_icon(color, down=self._expanded))

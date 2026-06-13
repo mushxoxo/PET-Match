@@ -54,3 +54,22 @@ def test_make_chip_property(app):
     chip = widgets.make_chip("Terracotta")
     assert chip.property("class") == "Chip"
     assert chip.text() == "Terracotta"
+
+
+def test_swatch_pixmap_uses_explicit_color(app):
+    from PySide6.QtGui import QColor
+
+    # Empty seed -> no initials drawn, so the center pixel is the pure fill.
+    pix = widgets.swatch_pixmap("", 40, color=QColor("#ff0000"))
+    center = pix.toImage().pixelColor(20, 20)
+    assert (center.red(), center.green(), center.blue()) == (255, 0, 0)
+
+
+def test_view_toggle_single_button_flips_mode(app):
+    toggle = widgets.ViewToggle()
+    assert toggle.current() == "list"
+    toggle._btn.click()
+    assert toggle.current() == "gallery"
+    toggle._btn.click()
+    assert toggle.current() == "list"
+    assert not toggle._btn.icon().isNull()

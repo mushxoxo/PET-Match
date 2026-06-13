@@ -156,6 +156,95 @@ def add_product(
     return product_id
 
 
+def update_product(
+    conn: sqlite3.Connection,
+    product_id: int,
+    *,
+    brand_id: Optional[int] = None,
+    sku: Optional[str] = None,
+    color_name: Optional[str] = None,
+    shade_no: Optional[str] = None,
+    thickness: Optional[float] = None,
+    category: Optional[str] = None,
+    self_label: Optional[str] = None,
+) -> None:
+    """Update a product's editable fields (and optionally reassign its brand).
+
+    The edit form always submits the full field set, so every keyword is
+    applied. Empty strings normalize to ``NULL``; ``thickness`` <= 0 becomes
+    ``NULL``. Validates the target brand exists, the ``(brand, sku)`` pair stays
+    unique (excluding this product), and at least one of SKU/color name is set.
+    Logs the old->new diff and commits atomically.
+    """
+    # IMPORTANT: this is a FULL-SET update — every column is overwritten with the
+    # passed value (omitted/None text fields become NULL). It is meant to be
+    # called from the detail-panel edit form, which always submits all fields.
+    # Do not call it with a partial field set expecting unspecified fields to be
+    # left unchanged.
+    old = _require_product(conn, product_id)
+
+    target_brand_id = old["brand_id"] if brand_id is None else int(brand_id)
+    brand = conn.execute(
+        "SELECT id, code FROM brands WHERE id = ?", (target_brand_id,)
+    ).fetchone()
+    if brand is None:
+        raise MutationError(f"No brand with id {target_brand_id}")
+
+    sku = (sku or "").strip() or None
+    color_name = (color_name or "").strip() or None
+    shade_no = (shade_no or "").strip() or None
+    category = (category or "").strip() or None
+    self_label = (self_label or "").strip() or None
+    if thickness is not None:
+        thickness = float(thickness)
+        if thickness <= 0:
+            thickness = None
+
+    if not sku and not color_name:
+        raise MutationError("A product needs at least a SKU or a color name.")
+
+    if sku is not None:
+        dup = conn.execute(
+            "SELECT id FROM products WHERE brand_id = ? AND sku = ? AND id <> ?",
+            (target_brand_id, sku, product_id),
+        ).fetchone()
+        if dup is not None:
+            raise MutationError(
+                f"{brand['code']} already has a product with SKU {sku!r}."
+            )
+
+    new_values = {
+        "brand_id": target_brand_id,
+        "sku": sku,
+        "color_name": color_name,
+        "shade_no": shade_no,
+        "thickness": thickness,
+        "category": category,
+        "self_label": self_label,
+    }
+    conn.execute(
+        "UPDATE products SET brand_id=?, sku=?, color_name=?, shade_no=?, "
+        "thickness=?, category=?, self_label=? WHERE id=?",
+        (
+            target_brand_id, sku, color_name, shade_no, thickness,
+            category, self_label, product_id,
+        ),
+    )
+    changes = {
+        key: {"old": old[key], "new": value}
+        for key, value in new_values.items()
+        if old[key] != value
+    }
+    audit.log_change(
+        conn,
+        action="update_product",
+        entity="product",
+        entity_id=product_id,
+        details={"changes": changes},
+    )
+    conn.commit()
+
+
 # --------------------------------------------------------------------------- #
 # Color families (similar-color equivalence classes)
 # --------------------------------------------------------------------------- #

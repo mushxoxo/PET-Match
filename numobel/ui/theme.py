@@ -122,6 +122,17 @@ QToolTip {{
     padding: 4px 8px;
     border-radius: 8px;
 }}
+QLabel {{ background-color: transparent; }}
+
+/* ---- Section headers (collapsible) ---- */
+QToolButton[class="SectionHeader"] {{
+    background-color: transparent;
+    border: none;
+    padding: 2px 0;
+    font-weight: 600;
+    color: {p.text};
+}}
+QToolButton[class="SectionHeader"]:hover {{ color: {p.accent}; }}
 
 /* ---- Cards ---- */
 QFrame[class="Card"] {{
@@ -216,21 +227,6 @@ QPushButton[class="SidebarItem"]:checked {{
     background-color: {p.accent_soft};
     color: {p.text};
     font-weight: 600;
-}}
-
-/* ---- Segmented view toggle ---- */
-QPushButton[class="Segment"] {{
-    background-color: {p.surface};
-    border: 1px solid {p.border};
-    border-radius: 12px;
-    padding: 6px 14px;
-    color: {p.text_muted};
-}}
-QPushButton[class="Segment"]:checked {{
-    background-color: {p.accent_soft};
-    color: {p.text};
-    font-weight: 600;
-    border: 1px solid {p.accent};
 }}
 
 /* ---- Tables ---- */
