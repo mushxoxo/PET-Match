@@ -2,3 +2,4 @@ PySide6
 pandas
 openpyxl
 pytest
+pyinstaller  # only needed to build a standalone executable

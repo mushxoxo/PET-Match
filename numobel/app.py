@@ -32,7 +32,11 @@ def main() -> int:
     conn = db.connect()
 
     # Imported lazily so a missing DB exits before importing the UI stack.
+    from numobel.ui import theme
     from numobel.ui.main_window import MainWindow
+
+    # Apply the persisted theme (defaults to light) before showing any UI.
+    theme.apply_theme(app, db.get_setting(conn, "theme", theme.DEFAULT_THEME))
 
     window = MainWindow(conn)
     window.show()

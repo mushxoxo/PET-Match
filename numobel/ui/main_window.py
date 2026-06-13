@@ -6,8 +6,9 @@ import sqlite3
 from typing import Optional
 
 from PySide6.QtCore import QItemSelectionModel, Qt
-from PySide6.QtGui import QStandardItem, QStandardItemModel
+from PySide6.QtGui import QAction, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QHBoxLayout,
     QHeaderView,
@@ -21,7 +22,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from numobel import search
+from numobel import db, search
+from numobel.ui import theme
+from numobel.ui.audit_tab import AuditTab
 from numobel.ui.detail_panel import DetailPanel
 from numobel.ui.price_tab import PriceTab
 
@@ -53,14 +56,41 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("NUMOBEL Colored PET Catalog")
         self.resize(1100, 700)
 
-        tabs = QTabWidget(self)
-        self.setCentralWidget(tabs)
+        self._build_menu()
 
-        tabs.addTab(self._build_catalog_tab(), "Catalog")
-        tabs.addTab(PriceTab(conn), "Prices")
+        self.tabs = QTabWidget(self)
+        self.setCentralWidget(self.tabs)
+
+        self.audit_tab = AuditTab(conn)
+        self.tabs.addTab(self._build_catalog_tab(), "Catalog")
+        self.tabs.addTab(PriceTab(conn), "Prices")
+        self.tabs.addTab(self.audit_tab, "Audit")
+        # Refresh the audit log each time its tab becomes visible.
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
         # Initial population: empty search returns all products (capped).
         self._run_search()
+
+    # ------------------------------------------------------------------ #
+    # Menu + theme
+    # ------------------------------------------------------------------ #
+    def _build_menu(self) -> None:
+        view_menu = self.menuBar().addMenu("&View")
+        toggle = QAction("Toggle &Dark / Light Theme", self)
+        toggle.setShortcut("Ctrl+T")
+        toggle.triggered.connect(self._toggle_theme)
+        view_menu.addAction(toggle)
+
+    def _toggle_theme(self) -> None:
+        app = QApplication.instance()
+        current = db.get_setting(self._conn, "theme", theme.DEFAULT_THEME)
+        new = theme.next_theme(current)
+        theme.apply_theme(app, new)
+        db.set_setting(self._conn, "theme", new)
+
+    def _on_tab_changed(self, index: int) -> None:
+        if self.tabs.widget(index) is self.audit_tab:
+            self.audit_tab.refresh()
 
     # ------------------------------------------------------------------ #
     # Catalog tab construction

@@ -7,5 +7,9 @@ images/*
 .venv/
 venv/
 
+# PyInstaller build artifacts
+build/
+dist/
+
 # Source data workbook (not tracked)
 my_excel/

@@ -7,10 +7,31 @@ schema creation, catalog reset, and small settings helpers.
 from __future__ import annotations
 
 import sqlite3
+import sys
 from pathlib import Path
 
-# Repo root is the parent of the ``numobel`` package directory.
-DEFAULT_DB_PATH = str(Path(__file__).resolve().parent.parent / "numobel.db")
+
+def base_dir() -> Path:
+    """Return the directory that holds ``numobel.db`` and ``images/``.
+
+    When running from source this is the repo root (parent of the ``numobel``
+    package). When frozen by PyInstaller, ``__file__`` lives inside a temporary
+    unpack dir, so we anchor to the executable's own directory instead — that
+    way the database and photos sit next to the ``.exe`` and persist across
+    runs.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+def images_dir() -> Path:
+    """Return the directory where attached photos are stored."""
+    return base_dir() / "images"
+
+
+# Where ``numobel.db`` lives (source layout: repo root).
+DEFAULT_DB_PATH = str(base_dir() / "numobel.db")
 
 
 def connect(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
