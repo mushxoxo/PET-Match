@@ -34,9 +34,9 @@ from PySide6.QtWidgets import (
 )
 
 from numobel import db, mutations, search
-from numobel.ui import delegates
+from numobel.ui import colors, delegates
 from numobel.ui.forms import ProductFormDialog
-from numobel.ui.widgets import Card, make_chip
+from numobel.ui.widgets import Card, CollapsibleSection, make_chip
 
 # Role storing the navigable product id on a similar-color list item.
 _NAV_ROLE = Qt.UserRole + 1
@@ -137,31 +137,31 @@ class DetailPanel(QWidget):
         title_layout.addLayout(chip_row)
         self._layout.addWidget(self._title_card)
 
-        # --- Details card ---
+        # --- Details card (collapsible, collapsed by default) ---
         self._fields_box = Card()
         fields_layout = QVBoxLayout(self._fields_box)
         fields_layout.setContentsMargins(16, 16, 16, 16)
-        details_title = QLabel("Details")
-        details_title.setStyleSheet("font-weight: 600;")
-        fields_layout.addWidget(details_title)
+        self._details_section = CollapsibleSection("Details", expanded=False)
+        fields_layout.addWidget(self._details_section)
+
         self._form = QFormLayout()
         self._form.setLabelAlignment(Qt.AlignRight)
-        fields_layout.addLayout(self._form)
+        self._details_section.add_layout(self._form)
         self._layout.addWidget(self._fields_box)
 
-        # --- Similar colors card ---
+        # --- Similar colors card (collapsible, expanded by default) ---
         self._similar_box = Card()
         sim_layout = QVBoxLayout(self._similar_box)
         sim_layout.setContentsMargins(16, 16, 16, 16)
-        similar_title = QLabel("Similar Colors")
-        similar_title.setStyleSheet("font-weight: 600;")
-        sim_layout.addWidget(similar_title)
+        self._similar_section = CollapsibleSection("Similar Colors", expanded=True)
+        sim_layout.addWidget(self._similar_section)
+
         self._similar_hint = QLabel(
             "The whole color family is shown. Double-click a member to jump to "
             "it."
         )
         self._similar_hint.setStyleSheet("color: gray; font-size: 11px;")
-        sim_layout.addWidget(self._similar_hint)
+        self._similar_section.add_widget(self._similar_hint)
         self._similar_list = QListWidget()
         self._similar_list.setItemDelegate(
             delegates.SimilarColorDelegate(self._similar_list)
@@ -170,7 +170,7 @@ class DetailPanel(QWidget):
         self._similar_list.itemSelectionChanged.connect(
             self._update_mapping_buttons
         )
-        sim_layout.addWidget(self._similar_list)
+        self._similar_section.add_widget(self._similar_list)
 
         map_row = QHBoxLayout()
         self._add_link_btn = QPushButton("Add Similar Color…")
@@ -183,7 +183,7 @@ class DetailPanel(QWidget):
         map_row.addWidget(self._remove_link_btn)
         map_row.addWidget(self._resolve_link_btn)
         map_row.addStretch(1)
-        sim_layout.addLayout(map_row)
+        self._similar_section.add_layout(map_row)
 
         self._layout.addWidget(self._similar_box)
 
@@ -341,6 +341,14 @@ class DetailPanel(QWidget):
                 item.setData(_STATUS_ROLE, status)
                 item.setData(_MEMBER_ROLE, link["member_product_id"])
                 item.setData(_NAV_ROLE, link["other_product_id"])
+                member_row = search.get_product(
+                    self._conn, link["member_product_id"]
+                )
+                if member_row is not None:
+                    item.setData(
+                        delegates.COLOR_ROLE,
+                        colors.swatch_color(self._conn, member_row).name(),
+                    )
                 item.setToolTip("Double-click to open this color")
             else:  # pending (unresolved / external)
                 item = QListWidgetItem(f"{label}  ({status})")
