@@ -20,14 +20,22 @@ from openpyxl import load_workbook
 
 from numobel import db
 from numobel.importer.run_import import build
+from numobel.sync import serialize
+from numobel.sync.serialize import RESTORE_ORDER
 
 #: Identifier written to (and matched in) the snapshot ``_meta`` sheet.
 FORMAT = "numobel-snapshot"
 #: Bump when the on-disk layout changes incompatibly.
 SNAPSHOT_VERSION = 1
 
-#: Tables restored in foreign-key-safe order (mirrors the export dump order).
-RESTORE_ORDER = ("brands", "color_groups", "products", "color_links", "prices")
+__all__ = [
+    "FORMAT",
+    "SNAPSHOT_VERSION",
+    "RESTORE_ORDER",
+    "is_snapshot",
+    "restore",
+    "import_workbook",
+]
 
 
 def is_snapshot(excel_path: str) -> bool:
@@ -134,19 +142,19 @@ def restore(excel_path: str, conn: sqlite3.Connection) -> dict:
         price_count = 0
 
         for table in RESTORE_ORDER:
-            for record in _read_sheet(wb, table):
-                cols = list(record.keys())
-                placeholders = ",".join("?" * len(cols))
-                conn.execute(
-                    f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
-                    [record[c] for c in cols],
-                )
-                if table == "products":
-                    product_count += 1
-                elif table == "prices":
-                    price_count += 1
-                elif table == "color_links":
-                    status = record.get("status")
+            records = list(_read_sheet(wb, table))
+            if not records:
+                continue
+            columns = list(records[0].keys())
+            rows = [[rec[c] for c in columns] for rec in records]
+            serialize.restore_table(conn, table, columns, rows)
+            if table == "products":
+                product_count += len(records)
+            elif table == "prices":
+                price_count += len(records)
+            elif table == "color_links":
+                for rec in records:
+                    status = rec.get("status")
                     if status in link_tallies:
                         link_tallies[status] += 1
 

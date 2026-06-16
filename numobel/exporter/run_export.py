@@ -19,10 +19,7 @@ from openpyxl import Workbook
 
 from numobel import db
 from numobel.importer.snapshot import FORMAT, SNAPSHOT_VERSION
-
-#: Tables dumped, in foreign-key-safe order (consumed in the same order on
-#: restore). Machine-local tables (``audit_log``, ``settings``) are excluded.
-SNAPSHOT_TABLES = ("brands", "color_groups", "products", "color_links", "prices")
+from numobel.sync.serialize import SNAPSHOT_TABLES, dump_table
 
 #: Base64 chunk size, kept under Excel's ~32,767-character per-cell limit.
 _CHUNK = 32000
@@ -31,14 +28,11 @@ _CHUNK = 32000
 def _dump_table(wb: Workbook, conn: sqlite3.Connection, table: str) -> int:
     """Write one table to its own sheet (header row = column names). Returns rows."""
     ws = wb.create_sheet(table)
-    cur = conn.execute(f"SELECT * FROM {table}")
-    cols = [d[0] for d in cur.description]
-    ws.append(cols)
-    n = 0
-    for row in cur:
-        ws.append([row[c] for c in cols])
-        n += 1
-    return n
+    data = dump_table(conn, table)
+    ws.append(data["columns"])
+    for row in data["rows"]:
+        ws.append(row)
+    return len(data["rows"])
 
 
 def _resolve_image(path: str) -> Path:
