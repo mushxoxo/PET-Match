@@ -112,6 +112,23 @@ class SyncWorker(QObject):
             self._conn_cache = db.connect(self._db_path)
         return self._conn_cache
 
+    @Slot()
+    def close(self) -> None:
+        """Close the cached sqlite connection (WAL checkpoint hygiene).
+
+        Invoked via a queued call on the worker's OWN thread before the thread's
+        event loop exits (see :meth:`SyncService.shutdown`), so the connection is
+        closed on the thread that opened it. Closing checkpoints the WAL and
+        removes the ``-wal`` / ``-shm`` sidecar files. Idempotent and guarded so a
+        double-close (or a never-opened connection) can never raise.
+        """
+        if self._conn_cache is not None:
+            try:
+                self._conn_cache.close()
+            except Exception:  # noqa: BLE001 - close must never raise on shutdown
+                pass
+            self._conn_cache = None
+
     # ----------------------------------------------------------------- #
     # Slots
     # ----------------------------------------------------------------- #
@@ -158,9 +175,18 @@ class SyncWorker(QObject):
 
     @Slot()
     def requestPush(self) -> None:
-        """Push the local catalog to the cloud."""
+        """Push the local catalog to the cloud.
+
+        Early-returns when the catalog is not linked yet: a push needs a real
+        spreadsheet id, so attempting one mid-connect would only error and keep
+        the offline retry timer spinning against a half-initialized link. (Unlike
+        ``requestConnect``, which is what establishes the link in the first
+        place, so it must NOT early-return.)
+        """
         try:
             conn = self._conn()
+            if not state.is_linked(conn):
+                return
             backend = self._backend_factory(conn)
             r = engine.push(conn, backend)
             self.pushFinished.emit(r.revision)

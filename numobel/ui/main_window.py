@@ -420,10 +420,13 @@ class MainWindow(QMainWindow):
         self._sync_status.setText(text)
 
     def _on_pull_finished(self, summary: dict) -> None:
-        """A cloud pull replaced the catalog: refresh views (quietly)."""
+        """A cloud pull replaced the catalog: refresh views (quietly).
+
+        ``audit_log`` is excluded from the synced tables and is never restored by
+        a pull, so refreshing the audit tab here would be redundant.
+        """
         self.catalog_tab.refresh()
         self.price_tab.refresh()
-        self.audit_tab.refresh()
         if self._has_catalog():
             self._outer.setCurrentIndex(_SHELL)
             self._show_catalog()

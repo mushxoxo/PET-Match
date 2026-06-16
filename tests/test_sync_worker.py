@@ -56,6 +56,15 @@ def _seed_db(path):
     conn.close()
 
 
+def _link_db(path):
+    """Mark the catalog at ``path`` as linked (flag + a target spreadsheet id)."""
+    conn = db.connect(str(path))
+    state.set_spreadsheet_id(conn, "sheet-xyz")
+    state.set_linked(conn, True)
+    conn.commit()
+    conn.close()
+
+
 def _capture(worker_obj):
     """Connect every signal to a list-appending recorder; return the record."""
     events: list = []
@@ -219,6 +228,7 @@ def test_push_offline(app, tmp_path):
 def test_push_auth_error(app, tmp_path):
     db_path = tmp_path / "numobel.db"
     _seed_db(db_path)
+    _link_db(db_path)  # linked: requestPush proceeds to the backend factory
 
     def boom_factory(conn):
         raise AuthError("re-auth required")
@@ -310,6 +320,7 @@ def test_disconnect(app, tmp_path):
 def test_slot_never_raises_on_backend_explosion(app, tmp_path):
     db_path = tmp_path / "numobel.db"
     _seed_db(db_path)
+    _link_db(db_path)  # linked: requestPush reaches the (exploding) factory
 
     def boom_factory(conn):
         raise RuntimeError("kaboom")
@@ -328,3 +339,49 @@ def test_slot_never_raises_on_backend_explosion(app, tmp_path):
     errs = [e for e in events if e[0] == "error"]
     assert errs and errs[-1][1] == "error"
     assert _last_status(events) == worker.STATUS_ERROR
+
+
+# --------------------------------------------------------------------------- #
+# requestPush early-returns before a link exists (quiet retry)
+# --------------------------------------------------------------------------- #
+def test_push_noop_when_not_linked(app, tmp_path):
+    db_path = tmp_path / "numobel.db"
+    _seed_db(db_path)  # NOT linked
+
+    def boom_factory(conn):  # must never be reached
+        raise AssertionError("backend factory called while unlinked")
+
+    w = worker.SyncWorker(
+        str(db_path),
+        backend_factory=boom_factory,
+        authorizer=lambda cid, csec: '{"token": "fake"}',
+    )
+    events = _capture(w)
+
+    w.requestPush()  # early-returns: no factory, no signals
+    QApplication.processEvents()
+
+    assert events == []  # quiet: nothing emitted to spin the retry timer
+
+
+# --------------------------------------------------------------------------- #
+# close() — WAL checkpoint hygiene, idempotent
+# --------------------------------------------------------------------------- #
+def test_close_is_idempotent_and_nulls_connection(app, tmp_path):
+    db_path = tmp_path / "numobel.db"
+    _seed_db(db_path)
+    w = worker.SyncWorker(
+        str(db_path),
+        backend_factory=lambda conn: FakeBackend(),
+        authorizer=lambda cid, csec: '{"token": "fake"}',
+    )
+
+    w._conn()  # force the lazy connection open
+    assert w._conn_cache is not None
+
+    w.close()
+    assert w._conn_cache is None
+
+    # Second close (and a close before any open) must not raise.
+    w.close()
+    assert w._conn_cache is None

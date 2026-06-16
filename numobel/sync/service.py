@@ -25,7 +25,7 @@ only ``worker``/``mutations``/``state``/``db`` and PySide6.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QMetaObject, QObject, Qt, QThread, QTimer, Signal
 
 from numobel import db, mutations
 from numobel.sync import state
@@ -110,6 +110,9 @@ class SyncService(QObject):
         mutations.register_listener(self._on_mutation)
         self._listener_registered = True
 
+        # Worker->service relays are live; severed exactly once in shutdown().
+        self._relays_connected = True
+
         if start:
             self._thread.start()
 
@@ -156,9 +159,53 @@ class SyncService(QObject):
             mutations.unregister_listener(self._on_mutation)
             self._listener_registered = False
         self._stop_timers()
+        # Sever the internal worker->handler relays so a late queued emission
+        # (e.g. from a slot already mid-flight on the worker thread) can't deliver
+        # into a torn-down consumer. Idempotent: each disconnect is wrapped so a
+        # second shutdown() (where they're already severed) stays safe. The public
+        # service signals themselves are left intact.
+        self._disconnect_worker_relays()
         if self._thread.isRunning():
+            # Close the worker's sqlite connection ON ITS OWN THREAD before the
+            # event loop exits: a queued `close` runs on the worker thread, and
+            # wait() (below) blocks until the thread — and thus that queued call —
+            # has finished. This checkpoints the WAL instead of letting the
+            # connection be GC'd uncleanly after the thread quits.
+            QMetaObject.invokeMethod(self._worker, "close", Qt.QueuedConnection)
             self._thread.quit()
             self._thread.wait()
+        else:
+            # Thread never started (e.g. start=False): close directly here.
+            self._worker.close()
+
+    def _disconnect_worker_relays(self):
+        """Disconnect the worker->service signal relays (idempotent).
+
+        Gated on ``_relays_connected`` so a second ``shutdown()`` skips the work
+        entirely (Qt only *warns* — it doesn't raise — on a redundant disconnect,
+        so the latch is what actually keeps it quiet). The try/except is a belt-
+        and-braces guard for any single relay Qt still rejects.
+        """
+        if not self._relays_connected:
+            return
+        self._relays_connected = False
+        relays = (
+            (self._worker.statusChanged, self.statusChanged),
+            (self._worker.statusChanged, self._on_status_changed),
+            (self._worker.conflictDetected, self.conflictDetected),
+            (self._worker.errored, self.errored),
+            (self._worker.pullFinished, self._on_pull_finished),
+            (self._worker.pushFinished, self._on_push_finished),
+            (self._worker.offline, self._on_offline),
+            (self._worker.online, self._on_online),
+        )
+        for signal, slot in relays:
+            try:
+                signal.disconnect(slot)
+            except (RuntimeError, TypeError):
+                # Qt raises if the connection was already severed (e.g. a second
+                # shutdown() call) — safe to ignore.
+                pass
 
     def _stop_timers(self):
         """Stop both timers and re-arm the offline notice (UI-thread only)."""
