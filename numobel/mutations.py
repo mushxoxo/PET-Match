@@ -21,6 +21,33 @@ class MutationError(ValueError):
     """Raised when a requested write is invalid (bad id, self-link, etc.)."""
 
 
+# --------------------------------------------------------------------------- #
+# Mutation listeners (post-commit hook, e.g. for the Google Sheets sync push)
+# --------------------------------------------------------------------------- #
+_listeners = []
+
+
+def register_listener(fn):
+    """Register fn(action, entity, entity_id) to be called after each committed mutation."""
+    if fn not in _listeners:
+        _listeners.append(fn)
+
+
+def unregister_listener(fn):
+    if fn in _listeners:
+        _listeners.remove(fn)
+
+
+def _notify(action, entity, entity_id):
+    """Notify all listeners of a committed mutation. Listener errors are swallowed
+    so a failing listener can never break a catalog write."""
+    for fn in list(_listeners):
+        try:
+            fn(action, entity, entity_id)
+        except Exception:
+            pass
+
+
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -52,6 +79,7 @@ def set_product_image(
         details={"image_path": image_path},
     )
     conn.commit()
+    _notify("clear_image" if image_path is None else "set_image", "product", product_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -90,6 +118,7 @@ def add_brand(
         details={"code": code, "name": name, "has_sheet": bool(has_sheet)},
     )
     conn.commit()
+    _notify("add_brand", "brand", brand_id)
     return brand_id
 
 
@@ -153,6 +182,7 @@ def add_product(
         details={"brand_id": brand_id, "sku": sku, "color_name": color_name},
     )
     conn.commit()
+    _notify("add_product", "product", product_id)
     return product_id
 
 
@@ -243,6 +273,7 @@ def update_product(
         details={"changes": changes},
     )
     conn.commit()
+    _notify("update_product", "product", product_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -324,6 +355,7 @@ def add_to_family(
         details={"anchor_id": anchor_id, "member_id": member_id, "group_id": gid},
     )
     conn.commit()
+    _notify("add_to_family", "product", member_id)
     return gid
 
 
@@ -359,6 +391,7 @@ def remove_from_family(conn: sqlite3.Connection, product_id: int) -> None:
         details={"group_id": gid, "dissolved": len(remaining) <= 1},
     )
     conn.commit()
+    _notify("remove_from_family", "product", product_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -384,6 +417,7 @@ def remove_reference(conn: sqlite3.Connection, link_id: int) -> None:
         },
     )
     conn.commit()
+    _notify("remove_reference", "color_link", link_id)
 
 
 def resolve_reference(
@@ -421,6 +455,7 @@ def resolve_reference(
         },
     )
     conn.commit()
+    _notify("resolve_reference", "color_link", link_id)
     return gid
 
 
@@ -468,3 +503,4 @@ def update_price_field(
         details={"field": field, "old": old[field], "new": value},
     )
     conn.commit()
+    _notify("update_price", "price", price_id)
