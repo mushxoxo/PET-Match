@@ -222,3 +222,75 @@ def test_pull_applies_migrate_folding_resolved_links():
         "SELECT COUNT(*) FROM color_links WHERE status = 'resolved'"
     ).fetchone()[0]
     assert remaining == 0
+
+
+def test_pull_from_empty_backend_is_first_link():
+    """Pull against a fresh/empty backend: revision 0, empty catalog, watermark 0."""
+    backend = FakeBackend()  # data={}, no meta written
+
+    dest = db.connect(":memory:")
+    db.create_schema(dest)
+    result = engine.pull(dest, backend)
+
+    assert result.revision == 0
+    for table in serialize.SNAPSHOT_TABLES:
+        count = dest.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        assert count == 0, f"{table} should be empty after first-link pull"
+    assert state.get_last_synced_revision(dest) == 0
+    assert state.is_pending(dest) is False
+
+
+def test_push_pull_push_subsequent_push_proceeds():
+    """A pull's watermark lets a later push through without a spurious conflict."""
+    conn = _sample_db()
+    backend = FakeBackend()
+
+    first = engine.push(conn, backend)
+    assert first.revision == 1
+    assert state.get_last_synced_revision(conn) == 1
+
+    # Pull on the SAME connection re-records the cloud revision as our watermark.
+    pulled = engine.pull(conn, backend)
+    assert pulled.revision == 1
+    assert state.get_last_synced_revision(conn) == 1
+
+    # The subsequent push must NOT raise ConflictError and must bump to 2.
+    second = engine.push(conn, backend)
+    assert second.revision == 2
+    assert backend.meta["revision"] == "2"
+    assert state.get_last_synced_revision(conn) == 2
+
+
+def test_resolve_conflict_local_uploads_real_photo(tmp_path, monkeypatch):
+    """Keep-local with a real on-disk photo uploads it and lands at cloud+1."""
+    images = tmp_path / "images"
+    images.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(db, "base_dir", lambda: tmp_path)
+    monkeypatch.setattr(db, "images_dir", lambda: images)
+
+    photo_bytes = b"\x89PNG\r\n\x1a\n-keep-local-photo-bytes"
+    (images / "100_pic.png").write_bytes(photo_bytes)
+
+    src = _sample_db()
+    src.execute(
+        "UPDATE products SET image_path = 'images/100_pic.png' WHERE id = 100"
+    )
+    src.commit()
+
+    backend = FakeBackend()
+    engine.push(src, backend)  # establishes cloud rev 1 + uploads the photo
+    uploads_after_push = backend.upload_count
+    assert uploads_after_push >= 1  # the photo was uploaded on the first push
+
+    # Force a diverged cloud revision so a plain push would conflict.
+    backend.meta["revision"] = "5"
+
+    result = engine.resolve_conflict(src, backend, "local")
+
+    assert isinstance(result, engine.PushResult)
+    assert result.revision == 6  # cloud 5 + 1
+    assert backend.meta["revision"] == "6"
+    assert state.get_last_synced_revision(src) == 6
+    # The photo is tracked in the rebuilt map and present in cloud blob storage.
+    assert any(row["product_id"] == 100 for row in backend.read_photo_map())
+    assert len(backend.photo_store) >= 1

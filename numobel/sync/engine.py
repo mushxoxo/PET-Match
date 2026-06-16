@@ -12,6 +12,18 @@ The cloud spreadsheet carries a monotonically increasing ``revision`` in its
 the cloud revision still equals our last-synced revision; otherwise someone else
 advanced the sheet and we raise :class:`~numobel.sync.errors.ConflictError`
 rather than blindly overwrite their work.
+
+This is read-then-write *optimistic concurrency*: it reliably detects
+*sequential* divergence — another device pushed since our last sync, leaving the
+cloud revision ahead of (or, after a restore-from-backup, behind) our watermark.
+It does NOT prevent a true simultaneous-write race: with the current
+:class:`~numobel.sync.backend.GoogleBackend` performing a plain (non-conditional)
+``write_meta``, two devices that read the same revision at the same instant can
+both compute ``cloud+1`` and write it, silently losing one update. The scheme is
+therefore advisory — adequate for low-concurrency personal laptop<->phone sync,
+not a hard mutual-exclusion guarantee. See
+:meth:`~numobel.sync.backend.Backend.write_meta` for the compare-and-swap
+precondition this would need to be a hard guarantee.
 """
 
 from __future__ import annotations
@@ -31,7 +43,13 @@ META_VERSION = 1
 
 @dataclass
 class PushResult:
-    """Outcome of a successful push: the new cloud revision + photos written."""
+    """Outcome of a successful push: the new cloud revision + photo-map size.
+
+    ``photos`` is the number of photos tracked in the rebuilt photo map
+    (``len(photo_map)``), i.e. the count of products that currently have a local
+    photo — NOT necessarily the number newly uploaded this push (unchanged
+    photos reuse their existing Drive id without re-uploading).
+    """
 
     revision: int
     photos: int
@@ -39,7 +57,12 @@ class PushResult:
 
 @dataclass
 class PullResult:
-    """Outcome of a successful pull: cloud revision, restored table counts, photos."""
+    """Outcome of a successful pull: cloud revision, restored table counts, photos.
+
+    ``photos`` here IS the actual number of files downloaded this pull (unchanged
+    files already present locally are not re-downloaded), unlike
+    :attr:`PushResult.photos` which is the map size.
+    """
 
     revision: int
     tables: dict = field(default_factory=dict)
@@ -54,6 +77,21 @@ def _now() -> str:
 def _read_revision(backend) -> int:
     """Read the cloud revision from ``_meta``; a fresh/empty sheet is revision 0."""
     return int(backend.read_meta().get("revision", 0) or 0)
+
+
+def _stage_setting(conn, key: str, value: str) -> None:
+    """Stage a settings row on ``conn`` WITHOUT committing.
+
+    Mirrors :func:`db.set_setting`'s upsert, but deliberately omits the commit so
+    the caller can flush these rows together with other staged work in a single
+    transaction. Used by :func:`pull` to write the revision watermark and pending
+    flag atomically with the restored catalog (see Fix 1 in the M4 hardening).
+    """
+    conn.execute(
+        "INSERT INTO settings(key, value) VALUES(?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
 
 
 def _do_push(conn, backend, new_rev: int) -> PushResult:
@@ -75,6 +113,10 @@ def _do_push(conn, backend, new_rev: int) -> PushResult:
             "updated_at": _now(),
         }
     )
+    # The local watermark is written LAST on purpose: cloud writes (sheet/Drive)
+    # can never share a transaction with local SQLite, so if any backend write
+    # above raised we want last_synced left untouched, leaving us to re-push.
+    # Only once the cloud is fully written do we record that we are in sync.
     state.set_last_synced_revision(conn, new_rev)
     state.set_pending(conn, False)
     return PushResult(revision=new_rev, photos=len(photo_map))
@@ -89,8 +131,13 @@ def push(conn, backend) -> PushResult:
     """
     cloud_rev = _read_revision(backend)
     last_synced = state.get_last_synced_revision(conn)
+    # `!=` (not `<`) is deliberate: a cloud revision LOWER than our watermark
+    # (the sheet was reset or restored from an older backup) is also a divergence
+    # we must surface rather than silently overwrite with our newer-looking copy.
     if cloud_rev != last_synced:
         raise ConflictError(local_revision=last_synced, cloud_revision=cloud_rev)
+    # Control only reaches here when cloud_rev == last_synced, so the max() is
+    # belt-and-suspenders; both operands are equal and we bump by one.
     new_rev = max(last_synced, cloud_rev) + 1
     return _do_push(conn, backend, new_rev)
 
@@ -110,10 +157,18 @@ def pull(conn, backend) -> PullResult:
     tables = serialize.restore_rows(conn, data)
     db.migrate(conn)
     photos_n = photos.pull_photos(conn, backend)
+
+    # Stage the watermark + pending flag on the SAME connection and let the
+    # single commit below flush them together with the restored catalog rows
+    # (Fix 1). Going through the committing state.* helpers here would split this
+    # into multiple transactions: a crash between the catalog commit and the
+    # watermark write would leave the local catalog at cloud_rev but last_synced
+    # stale, surfacing a spurious ConflictError on the next push. state.KEY_* are
+    # the source of truth for the key names.
+    _stage_setting(conn, state.KEY_LAST_SYNCED_REVISION, str(int(cloud_rev)))
+    _stage_setting(conn, state.KEY_PENDING, "0")
     conn.commit()
 
-    state.set_last_synced_revision(conn, cloud_rev)
-    state.set_pending(conn, False)
     return PullResult(revision=cloud_rev, tables=tables, photos=photos_n)
 
 

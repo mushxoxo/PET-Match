@@ -54,7 +54,22 @@ class Backend(abc.ABC):
 
     @abc.abstractmethod
     def write_meta(self, meta: dict) -> None:
-        """Overwrite the ``_meta`` tab from a ``{key: value}`` dict."""
+        """Overwrite the ``_meta`` tab from a ``{key: value}`` dict.
+
+        Optimistic-concurrency precondition: the orchestration layer's
+        conflict-safety in a multi-device setup depends on this write ideally
+        being *revision-conditional* — a compare-and-swap that only succeeds if
+        the cloud revision is still the one we read. Without server-side CAS the
+        revision scheme is merely advisory: two devices that read the same
+        revision simultaneously can both write ``cloud+1``, producing a silent
+        lost update.
+
+        The current ``GoogleBackend`` does a plain (unconditional) write, so the
+        practical guarantee is "safe for low-concurrency personal laptop<->phone
+        sync, not hard mutual-exclusion." If Sheets/Drive ever expose an atomic
+        conditional write, implementing it here is what would upgrade the engine
+        from sequential-divergence detection to a true race-proof guarantee.
+        """
         raise NotImplementedError
 
     @abc.abstractmethod
