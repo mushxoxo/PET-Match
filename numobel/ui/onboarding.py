@@ -27,6 +27,7 @@ class OnboardingWidget(QWidget):
     """Centered welcome card with a "choose workbook" call to action."""
 
     file_selected = Signal(str)
+    google_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -66,6 +67,15 @@ class OnboardingWidget(QWidget):
         button_row.addWidget(self._choose_btn)
         button_row.addStretch(1)
         col.addLayout(button_row)
+
+        google_row = QHBoxLayout()
+        google_row.addStretch(1)
+        self._google_btn = QPushButton("Load from Google…")
+        self._google_btn.setCursor(Qt.PointingHandCursor)
+        self._google_btn.clicked.connect(self.google_requested)
+        google_row.addWidget(self._google_btn)
+        google_row.addStretch(1)
+        col.addLayout(google_row)
 
         hint = QLabel(
             "Expects the NUMOBEL workbook "
