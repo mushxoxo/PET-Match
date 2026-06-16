@@ -81,14 +81,21 @@ def _coerce(value, affinity: str):
         if isinstance(value, int):
             return value
         if isinstance(value, float):
-            return int(value)
+            # Only narrow to int when genuinely integral; a non-integral float
+            # (5.5) passes through so SQLite stores it as REAL rather than us
+            # silently truncating it to 5.
+            return int(value) if value.is_integer() else value
         try:
             return int(value)
         except (TypeError, ValueError):
             try:
-                return int(float(value))
+                # Numeric but not a bare int string (e.g. "5.0" / "5.5"). Keep
+                # integral values as int; preserve non-integral as float rather
+                # than truncating. Unparseable values fall through unchanged.
+                parsed = float(value)
             except (TypeError, ValueError):
                 return value  # unparseable — leave as-is rather than crash
+            return int(parsed) if parsed.is_integer() else parsed
     if affinity == "REAL":
         try:
             return float(value)
@@ -109,6 +116,10 @@ def restore_table(
     affinities = _table_affinities(conn, table)
     col_affinity = [affinities.get(c, "TEXT") for c in columns]
     placeholders = ",".join("?" * len(columns))
+    # Identifier interpolation is safe here: ``table`` comes from the fixed
+    # internal SNAPSHOT_TABLES allowlist and column names originate from trusted
+    # dump/schema sources (cursor.description / PRAGMA table_info). A future
+    # caller passing externally-derived column names would need to validate them.
     sql = f"INSERT INTO {table} ({','.join(columns)}) VALUES ({placeholders})"
 
     count = 0

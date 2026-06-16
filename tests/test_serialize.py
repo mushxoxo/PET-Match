@@ -165,9 +165,37 @@ def test_restore_table_integral_float_to_int():
     db.create_schema(dest)
     serialize.restore_table(dest, "brands", ["id", "code", "has_sheet"],
                             [[5.0, "AT", 1]])
+    # The numeric string "5.0" is integral too and must narrow to int.
+    serialize.restore_table(dest, "brands", ["id", "code", "has_sheet"],
+                            [[6, "NU", "5.0"]])
     dest.commit()
-    val = dest.execute("SELECT id FROM brands").fetchone()[0]
+    val = dest.execute("SELECT id FROM brands WHERE code='AT'").fetchone()[0]
     assert val == 5 and isinstance(val, int)
+    has = dest.execute("SELECT has_sheet FROM brands WHERE code='NU'").fetchone()[0]
+    assert has == 5 and isinstance(has, int)
+
+
+def test_restore_table_non_integral_not_truncated():
+    """A non-integral value into an INTEGER column must not be truncated.
+
+    Matches the prior xlsx restore behavior where SQLite's native affinity kept
+    a non-integral value as REAL instead of silently dropping the fraction.
+    """
+    dest = db.connect(":memory:")
+    db.create_schema(dest)
+    # has_sheet has INTEGER affinity but is not the rowid PK, so SQLite stores
+    # a non-integral value verbatim instead of rejecting it. Feed both a Python
+    # float and a numeric string carrying a fraction.
+    serialize.restore_table(dest, "brands", ["id", "code", "has_sheet"],
+                            [[1, "AT", 5.5]])
+    serialize.restore_table(dest, "brands", ["id", "code", "has_sheet"],
+                            [[2, "NU", "5.5"]])
+    dest.commit()
+
+    float_val = dest.execute("SELECT has_sheet FROM brands WHERE id=1").fetchone()[0]
+    str_val = dest.execute("SELECT has_sheet FROM brands WHERE id=2").fetchone()[0]
+    assert float_val == 5.5 and float_val != 5
+    assert str_val == 5.5 and str_val != 5
 
 
 def test_restore_rows_skips_missing_tables():
