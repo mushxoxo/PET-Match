@@ -40,6 +40,13 @@ def connect(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # WAL + busy_timeout let the UI thread and the sync worker thread safely
+    # touch the same file: WAL permits concurrent readers alongside a single
+    # writer, and a 5s busy_timeout makes a contended write wait-and-retry
+    # instead of failing immediately with "database is locked". Both are
+    # idempotent and safe for ``:memory:`` (journal_mode just stays "memory").
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 
