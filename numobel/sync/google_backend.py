@@ -220,6 +220,18 @@ class GoogleBackend(Backend):
 
         Returns ``{"spreadsheet_id", "photo_folder_id"}``. If both ids are
         already set this is a no-op that just returns them.
+
+        .. warning:: Idempotent on the happy path and when both ids are already
+           set, but **NOT crash-safe mid-flight**: if the spreadsheet is created
+           and the subsequent Drive photo-folder creation then fails, the
+           spreadsheet id is set on the instance (``self.spreadsheet_id``) but
+           never returned to the caller, so a naive retry would create a *second*
+           (orphan) spreadsheet. ``self.spreadsheet_id`` is assigned on the
+           instance immediately after the create call (and ``self.photo_folder_id``
+           likewise), so a caller inspecting the instance after a failure can
+           recover the id. The orchestration layer (M4) should persist
+           ``self.spreadsheet_id`` / ``self.photo_folder_id`` as soon as each is
+           created so a retry reuses them rather than orphaning a spreadsheet.
         """
         if self.spreadsheet_id and self.photo_folder_id:
             return {
@@ -335,15 +347,42 @@ class GoogleBackend(Backend):
         return result["id"]
 
     def download_photo(self, file_id: str, dest_path: str) -> None:
-        import os
+        """Download a Drive blob to ``dest_path`` atomically and error-translated.
 
+        The blob is streamed into a sibling ``*.part`` temp file and only
+        ``os.replace``-d onto ``dest_path`` once the full download succeeds, so a
+        failure mid-stream never leaves a truncated/empty file at the final path.
+        Both the ``get_media`` request build and the ``next_chunk()`` loop are
+        routed through :meth:`_classify` (via the same ``HttpError`` handling the
+        other methods use), so 404 → :class:`errors.SheetMissingError`, 401/403 →
+        :class:`errors.AuthError`, and any other status propagates intact. The
+        destination's parent directory is created if missing.
+        """
+        import os
+        import tempfile
+
+        from googleapiclient.errors import HttpError
         from googleapiclient.http import MediaIoBaseDownload
 
         _, drive = self._services()
-        os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
-        request = drive.files().get_media(fileId=file_id)
-        with open(dest_path, "wb") as fh:
-            downloader = MediaIoBaseDownload(fh, request)
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
+        dest_dir = os.path.dirname(os.path.abspath(dest_path))
+        os.makedirs(dest_dir, exist_ok=True)
+
+        fd, tmp_path = tempfile.mkstemp(dir=dest_dir, suffix=".part")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                try:
+                    request = drive.files().get_media(fileId=file_id)
+                    downloader = MediaIoBaseDownload(fh, request)
+                    done = False
+                    while not done:
+                        _, done = downloader.next_chunk()
+                except HttpError as exc:
+                    raise self._classify(exc) from exc
+            os.replace(tmp_path, dest_path)
+        except BaseException:
+            try:
+                os.remove(tmp_path)
+            except FileNotFoundError:
+                pass
+            raise
