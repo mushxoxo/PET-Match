@@ -13,17 +13,34 @@ Note: ``numobel.db`` and ``images/`` are intentionally NOT bundled. At runtime
 the app anchors to the executable's own directory (see ``numobel.db.base_dir``),
 so ship ``numobel.db`` (produced by ``python -m numobel.importer.run_import``)
 alongside the executable; ``images/`` is created next to it on first photo add.
+
+The Google sync libraries (Sheets/Drive) are bundled here via collected
+submodules + data files, because their dynamic imports, bundled API-discovery
+cache, and TLS certs are missed by PyInstaller's static analysis. NO OAuth
+client id/secret is embedded in the binary: the user enters those at runtime in
+the "Connect Google…" dialog and they are stored in the local ``numobel.db``
+settings table, so the frozen binary contains no secrets.
 """
 
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+
 block_cipher = None
+
+
+hidden = (
+    collect_submodules("googleapiclient")
+    + collect_submodules("google")
+    + ["httplib2", "uritemplate"]
+)
+datas = collect_data_files("googleapiclient") + collect_data_files("certifi")
 
 
 a = Analysis(
     ["run.py"],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=datas,
+    hiddenimports=hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
