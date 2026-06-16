@@ -9,6 +9,21 @@ from PySide6.QtWidgets import QApplication
 from numobel import db
 
 
+def _startup_sync(sync, conn) -> None:
+    """Data-loss-safe startup sync: act only when the catalog is already linked.
+
+    Pending local edits are pushed up (which conflict-prompts if the cloud also
+    moved) rather than silently discarded by a pull. When not linked, do nothing.
+    """
+    from numobel.sync import state
+
+    if state.is_linked(conn):
+        if state.is_pending(conn):
+            sync.push()
+        else:
+            sync.pull()
+
+
 def main() -> int:
     """Create the QApplication, open the DB, and show the main window.
 
@@ -25,7 +40,6 @@ def main() -> int:
     # transitive color families).
     db.migrate(conn)
 
-    from numobel.sync import state
     from numobel.sync.service import SyncService
     from numobel.ui import theme
     from numobel.ui.main_window import MainWindow
@@ -39,14 +53,8 @@ def main() -> int:
     window = MainWindow(conn, sync_service=sync)
     window.show()
 
-    # Startup sync (data-loss-safe): only when the catalog is already linked.
-    # Pending local edits are pushed up (which conflict-prompts if the cloud
-    # also moved) rather than silently discarded by a pull.
-    if state.is_linked(conn):
-        if state.is_pending(conn):
-            sync.push()
-        else:
-            sync.pull()
+    # Startup sync (data-loss-safe): only acts when the catalog is linked.
+    _startup_sync(sync, conn)
 
     try:
         return app.exec()

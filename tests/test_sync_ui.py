@@ -301,3 +301,51 @@ def test_close_event_shuts_down_service(app, conn, service, monkeypatch):
     window = MainWindow(conn, sync_service=service)
     window.close()
     assert calls and calls[0] is True
+
+
+# --------------------------------------------------------------------------- #
+# Startup sync decision (app._startup_sync)
+# --------------------------------------------------------------------------- #
+class _SyncRecorder:
+    """Records push/pull calls without needing a real SyncService."""
+
+    def __init__(self):
+        self.pushes = 0
+        self.pulls = 0
+
+    def push(self):
+        self.pushes += 1
+
+    def pull(self):
+        self.pulls += 1
+
+
+def test_startup_sync_linked_pending_pushes(app, conn):
+    state.set_spreadsheet_id(conn, "sheet-1")
+    state.set_linked(conn, True)
+    state.set_pending(conn, True)
+    rec = _SyncRecorder()
+    from numobel import app as numobel_app
+
+    numobel_app._startup_sync(rec, conn)
+    assert (rec.pushes, rec.pulls) == (1, 0)
+
+
+def test_startup_sync_linked_not_pending_pulls(app, conn):
+    state.set_spreadsheet_id(conn, "sheet-1")
+    state.set_linked(conn, True)
+    state.set_pending(conn, False)
+    rec = _SyncRecorder()
+    from numobel import app as numobel_app
+
+    numobel_app._startup_sync(rec, conn)
+    assert (rec.pushes, rec.pulls) == (0, 1)
+
+
+def test_startup_sync_not_linked_does_nothing(app, conn):
+    assert not state.is_linked(conn)
+    rec = _SyncRecorder()
+    from numobel import app as numobel_app
+
+    numobel_app._startup_sync(rec, conn)
+    assert (rec.pushes, rec.pulls) == (0, 0)

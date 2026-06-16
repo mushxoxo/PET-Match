@@ -82,7 +82,16 @@ class MainWindow(QMainWindow):
         """Add a status bar with a permanent right-aligned sync indicator."""
         bar = QStatusBar()
         self.setStatusBar(bar)
-        self._sync_status = QLabel("Not connected" if self._sync is None else "")
+        from numobel.sync.worker import STATUS_DISCONNECTED
+
+        # Seed the indicator so it is never blank: with no service (or a service
+        # that is not yet linked) show "Not connected" until the first real
+        # statusChanged arrives.
+        self._sync_status = QLabel(
+            STATUS_DISCONNECTED
+            if self._sync is None or not state.is_linked(self._conn)
+            else ""
+        )
         bar.addPermanentWidget(self._sync_status)
 
     def _wire_sync_signals(self) -> None:
@@ -449,6 +458,14 @@ class MainWindow(QMainWindow):
                 "Reconnect needed",
                 "Google sync needs to reconnect. Please use "
                 "Google → Connect Google… to sign in again.\n\n"
+                f"{message}",
+            )
+        elif kind == "sheet_missing":
+            QMessageBox.warning(
+                self,
+                "Sheet not found",
+                "The linked Google Sheet could not be found — it may have been "
+                "deleted or moved. Reconnect or relink to create a new one.\n\n"
                 f"{message}",
             )
         else:
