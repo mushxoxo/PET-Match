@@ -50,6 +50,16 @@ def _delete_setting(conn: sqlite3.Connection, key: str) -> None:
     conn.commit()
 
 
+def _get_bool(conn: sqlite3.Connection, key: str) -> bool:
+    """Read a boolean settings flag encoded as ``"1"`` / ``"0"``."""
+    return db.get_setting(conn, key) == "1"
+
+
+def _set_bool(conn: sqlite3.Connection, key: str, value: bool) -> None:
+    """Store a boolean settings flag encoded as ``"1"`` / ``"0"``."""
+    db.set_setting(conn, key, "1" if value else "0")
+
+
 # --------------------------------------------------------------------------- #
 # Device identity
 # --------------------------------------------------------------------------- #
@@ -65,12 +75,12 @@ def get_device_id(conn: sqlite3.Connection) -> str:
 # --------------------------------------------------------------------------- #
 # OAuth client credentials
 # --------------------------------------------------------------------------- #
-def get_client_id(conn: sqlite3.Connection):
+def get_client_id(conn: sqlite3.Connection) -> str | None:
     """Return the stored OAuth client id, or ``None``."""
     return db.get_setting(conn, KEY_OAUTH_CLIENT_ID)
 
 
-def get_client_secret(conn: sqlite3.Connection):
+def get_client_secret(conn: sqlite3.Connection) -> str | None:
     """Return the stored OAuth client secret, or ``None``."""
     return db.get_setting(conn, KEY_OAUTH_CLIENT_SECRET)
 
@@ -86,7 +96,7 @@ def set_client_credentials(
 # --------------------------------------------------------------------------- #
 # OAuth token JSON (raw string; auth.py converts to/from a Credentials object)
 # --------------------------------------------------------------------------- #
-def get_token_json(conn: sqlite3.Connection):
+def get_token_json(conn: sqlite3.Connection) -> str | None:
     """Return the raw OAuth token JSON string, or ``None``."""
     return db.get_setting(conn, KEY_OAUTH_TOKEN_JSON)
 
@@ -102,24 +112,24 @@ def set_token_json(conn: sqlite3.Connection, token_json) -> None:
 # --------------------------------------------------------------------------- #
 # Spreadsheet / photo folder ids
 # --------------------------------------------------------------------------- #
-def get_spreadsheet_id(conn: sqlite3.Connection):
+def get_spreadsheet_id(conn: sqlite3.Connection) -> str | None:
     """Return the linked spreadsheet id, or ``None``."""
     return db.get_setting(conn, KEY_SPREADSHEET_ID)
 
 
-def set_spreadsheet_id(conn: sqlite3.Connection, v) -> None:
+def set_spreadsheet_id(conn: sqlite3.Connection, spreadsheet_id) -> None:
     """Store the linked spreadsheet id."""
-    db.set_setting(conn, KEY_SPREADSHEET_ID, v)
+    db.set_setting(conn, KEY_SPREADSHEET_ID, spreadsheet_id)
 
 
-def get_photo_folder_id(conn: sqlite3.Connection):
+def get_photo_folder_id(conn: sqlite3.Connection) -> str | None:
     """Return the linked Drive photo-folder id, or ``None``."""
     return db.get_setting(conn, KEY_PHOTO_FOLDER_ID)
 
 
-def set_photo_folder_id(conn: sqlite3.Connection, v) -> None:
+def set_photo_folder_id(conn: sqlite3.Connection, photo_folder_id) -> None:
     """Store the linked Drive photo-folder id."""
-    db.set_setting(conn, KEY_PHOTO_FOLDER_ID, v)
+    db.set_setting(conn, KEY_PHOTO_FOLDER_ID, photo_folder_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -146,12 +156,12 @@ def set_last_synced_revision(conn: sqlite3.Connection, revision: int) -> None:
 # --------------------------------------------------------------------------- #
 def is_pending(conn: sqlite3.Connection) -> bool:
     """Whether a sync push is pending (local changes not yet pushed)."""
-    return db.get_setting(conn, KEY_PENDING) == "1"
+    return _get_bool(conn, KEY_PENDING)
 
 
 def set_pending(conn: sqlite3.Connection, value: bool) -> None:
     """Set the pending-push flag."""
-    db.set_setting(conn, KEY_PENDING, "1" if value else "0")
+    _set_bool(conn, KEY_PENDING, value)
 
 
 # --------------------------------------------------------------------------- #
@@ -159,14 +169,14 @@ def set_pending(conn: sqlite3.Connection, value: bool) -> None:
 # --------------------------------------------------------------------------- #
 def is_linked(conn: sqlite3.Connection) -> bool:
     """Whether sync is linked: the flag is truthy AND a target sheet is set."""
-    if db.get_setting(conn, KEY_LINKED) != "1":
+    if not _get_bool(conn, KEY_LINKED):
         return False
     return bool(get_spreadsheet_id(conn))
 
 
 def set_linked(conn: sqlite3.Connection, value: bool) -> None:
     """Set the linked flag."""
-    db.set_setting(conn, KEY_LINKED, "1" if value else "0")
+    _set_bool(conn, KEY_LINKED, value)
 
 
 # --------------------------------------------------------------------------- #
