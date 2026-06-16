@@ -132,6 +132,12 @@ class SyncWorker(QObject):
             state.set_photo_folder_id(conn, ids["photo_folder_id"])
             state.set_linked(conn, True)
 
+            # NOTE: this step-by-step persistence (creds → token → ids →
+            # set_linked(True) → seed/adopt) is deliberately NOT rolled back if a
+            # later step fails. is_linked requires BOTH the flag and a real
+            # spreadsheet id, the watermark is never advanced on failure, and the
+            # M6 pull-on-start path reconciles a half-seeded link on the next run.
+
             # Seed-or-adopt: a sheet that already carries data (revision > 0) is
             # adopted by pulling it down; an empty sheet is seeded with our local
             # catalog by pushing.
@@ -194,6 +200,14 @@ class SyncWorker(QObject):
                         "tables": result.tables,
                         "photos": result.photos,
                     }
+                )
+            else:
+                # Defensive: every known resolve_conflict result is a Push/Pull
+                # result. If a future engine change emits something else, fail
+                # loudly (caught below by _handle_error) rather than silently
+                # going online+SYNCED with no result signal.
+                raise RuntimeError(
+                    f"Unexpected resolve_conflict result: {type(result).__name__}"
                 )
             self.online.emit()
             self.statusChanged.emit(STATUS_SYNCED)
