@@ -129,6 +129,35 @@ def test_pull_finished_resets_offline(app, tmp_path):
         svc.shutdown()
 
 
+def test_disconnect_stops_retry_timer(app, tmp_path):
+    db_path = tmp_path / "numobel.db"
+    _seed_db(db_path)
+    _mark_linked(db_path)
+    svc = SyncService(str(db_path), retry_ms=20, start=False)
+    try:
+        fires = []
+        svc._pushRequested.connect(lambda: fires.append(1))
+
+        # Go offline: retry timer starts and the user is notified once.
+        svc._on_offline()
+        assert svc._retry.isActive() is True
+        assert svc._offline_notified is True
+
+        # User disconnects: timers must be torn down immediately.
+        svc.disconnect()
+        assert svc._retry.isActive() is False
+        assert svc._debounce.isActive() is False
+        assert svc._offline_notified is False
+
+        # Prove no further push fires after disconnect.
+        fires.clear()
+        QTest.qWait(80)
+        QApplication.processEvents()
+        assert fires == []
+    finally:
+        svc.shutdown()
+
+
 # --------------------------------------------------------------------------- #
 # debounce coalescing
 # --------------------------------------------------------------------------- #

@@ -29,7 +29,7 @@ from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
 
 from numobel import db, mutations
 from numobel.sync import state
-from numobel.sync.worker import SyncWorker
+from numobel.sync.worker import STATUS_DISCONNECTED, SyncWorker
 
 
 class SyncService(QObject):
@@ -85,6 +85,7 @@ class SyncService(QObject):
 
         # Worker signals -> public relays / FSM handlers.
         self._worker.statusChanged.connect(self.statusChanged)
+        self._worker.statusChanged.connect(self._on_status_changed)
         self._worker.conflictDetected.connect(self.conflictDetected)
         self._worker.errored.connect(self.errored)
         self._worker.pullFinished.connect(self._on_pull_finished)
@@ -133,7 +134,16 @@ class SyncService(QObject):
         self._resolveRequested.emit(choice)
 
     def disconnect(self):
-        """Clear all sync state (on the worker)."""
+        """Clear all sync state (on the worker).
+
+        Tears down local sync timing immediately on this (UI) thread: the call
+        is user-initiated here, so stopping the timers is thread-correct. This
+        guarantees no debounced or retried push fires once the user has
+        disconnected — the worker's ``requestDisconnect`` clears the token and
+        emits only ``statusChanged("Not connected")``, so it never trips the
+        online/push/pull handlers that would otherwise stop ``_retry``.
+        """
+        self._stop_timers()
         self._disconnectRequested.emit()
 
     def shutdown(self):
@@ -145,11 +155,16 @@ class SyncService(QObject):
         if self._listener_registered:
             mutations.unregister_listener(self._on_mutation)
             self._listener_registered = False
-        self._debounce.stop()
-        self._retry.stop()
+        self._stop_timers()
         if self._thread.isRunning():
             self._thread.quit()
             self._thread.wait()
+
+    def _stop_timers(self):
+        """Stop both timers and re-arm the offline notice (UI-thread only)."""
+        self._debounce.stop()
+        self._retry.stop()
+        self._offline_notified = False
 
     # --------------------------------------------------------------------- #
     # FSM / internal handlers
@@ -171,6 +186,11 @@ class SyncService(QObject):
             self._debounce.start()  # coalesce a burst into one push
         except Exception:  # noqa: BLE001 - sync must never break a write
             pass
+
+    def _on_status_changed(self, status):
+        """Guard: a worker-initiated disconnect must also stop local timers."""
+        if status == STATUS_DISCONNECTED:
+            self._stop_timers()
 
     def _fire_push(self):
         """Debounce or retry timer fired: request a push on the worker."""
