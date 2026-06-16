@@ -119,6 +119,17 @@ def pull_photos(conn: sqlite3.Connection, backend, photo_map=None) -> int:
 
     Returns the number of files actually downloaded. The UPDATEs are executed on
     ``conn`` but NOT committed — the caller owns the transaction.
+
+    Assumptions / caveats:
+
+    * Each photo-map row is assumed to have a unique ``filename`` (the exporter
+      guarantees this via its ``<product_id>_<basename>`` naming). A malformed
+      remote map with duplicate filenames could cross-write — two rows pointing
+      at the same ``db.images_dir()/filename`` would clobber each other on disk.
+    * This function is NOT atomic on its own: it executes the ``UPDATE``
+      statements without committing and relies on the caller's transaction to
+      roll back on exception. Files already written to disk are not rolled
+      back, however.
     """
     if photo_map is None:
         photo_map = backend.read_photo_map()

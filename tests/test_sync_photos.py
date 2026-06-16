@@ -158,6 +158,30 @@ def test_pull_photos_skips_identical(catalog):
     assert path == "images/100_a.png"
 
 
+def test_pull_photos_redownloads_on_checksum_mismatch(catalog):
+    conn, base, images = catalog
+    stale_bytes = b"stale-local-photo-a"
+    fresh_bytes = b"remote-photo-a-FRESH"
+    # Local file EXISTS but holds stale bytes that do NOT match the map row.
+    (images / "100_a.png").write_bytes(stale_bytes)
+
+    backend = FakeBackend()
+    backend.photo_store = {"fid-a": fresh_bytes}
+    backend.photo_map = [
+        {"product_id": 100, "drive_file_id": "fid-a", "filename": "100_a.png", "checksum": _sha256(fresh_bytes)},
+    ]
+
+    count = photos.pull_photos(conn, backend)
+
+    assert count == 1  # exactly one (re)download for the stale file
+    assert backend.download_count == 1
+    # Local file overwritten with the map's bytes.
+    assert (images / "100_a.png").read_bytes() == fresh_bytes
+    # image_path repointed.
+    path = conn.execute("SELECT image_path FROM products WHERE id = 100").fetchone()[0]
+    assert path == "images/100_a.png"
+
+
 def test_pull_photos_does_not_commit(catalog):
     conn, base, images = catalog
     bytes_a = b"remote-photo-a"
