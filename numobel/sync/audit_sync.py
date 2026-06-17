@@ -114,6 +114,9 @@ def push_audit(conn: sqlite3.Connection, backend) -> int:
         by_uuid[uid] = row
 
     merged = list(by_uuid.values())
+    # TODO(M-later): push reads + rewrites the ENTIRE cloud audit log every time
+    # — O(total history) per push. Switch to incremental/append semantics once
+    # the log grows large enough that full rewrites become a bottleneck.
     backend.write_audit_log(merged)
     return len(merged)
 

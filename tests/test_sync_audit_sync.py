@@ -197,3 +197,68 @@ def test_absorb_skips_blank_uuid():
     b.commit()
     assert n == 1
     assert _uuids(b) == {"good"}
+
+
+def test_pull_audit_same_uuid_different_content_keeps_local():
+    """uuid is immutable identity: a same-uuid cloud row is skipped, not merged.
+
+    Locks the "entries are never updated, only inserted-if-new" contract against
+    a future "merge by ts" regression that would overwrite local content.
+    """
+    cloud = FakeBackend()
+    # Cloud holds a row with uuid "U" but DIFFERENT action/details.
+    cloud.audit_log = [
+        {"uuid": "U", "ts": "2026-01-01T00:00:00", "action": "delete",
+         "entity": "product", "entity_id": 7, "details": "cloud-version"},
+    ]
+
+    b = _device()
+    # Local row shares uuid "U" but has its own (different) content.
+    b.execute(
+        "INSERT INTO audit_log(uuid, ts, action, entity, entity_id, details) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("U", "2025-12-31T00:00:00", "create", "product", 1, "local-version"),
+    )
+    b.commit()
+    count_before = b.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+
+    n = audit_sync.pull_audit(b, cloud)
+    b.commit()
+
+    assert n == 0  # same-uuid cloud row skipped, nothing absorbed
+    count_after = b.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+    assert count_after == count_before  # count did not grow
+
+    row = b.execute(
+        "SELECT ts, action, entity, entity_id, details FROM audit_log "
+        "WHERE uuid = 'U'"
+    ).fetchone()
+    # Local row UNCHANGED — cloud's same-uuid content did NOT overwrite it.
+    assert row["ts"] == "2025-12-31T00:00:00"
+    assert row["action"] == "create"
+    assert row["entity"] == "product"
+    assert row["entity_id"] == 1
+    assert row["details"] == "local-version"
+
+
+def test_absorb_dedupes_duplicate_uuid_within_one_batch():
+    """In-loop dedup is load-bearing: two same-uuid rows in one batch insert once.
+
+    Without ``existing.add(uid)`` inside the loop the second INSERT would hit the
+    uidx_audit_log_uuid UNIQUE constraint and raise IntegrityError. This proves
+    the dedup prevents that — a future "simplification" removing it fails here.
+    """
+    b = _device()
+    rows = [
+        {"uuid": "x", "ts": "t1", "action": "create", "entity": "product",
+         "entity_id": 1, "details": "first"},
+        {"uuid": "x", "ts": "t2", "action": "update", "entity": "product",
+         "entity_id": 1, "details": "second"},
+    ]
+
+    n = audit_sync._absorb(b, rows)  # must NOT raise IntegrityError
+    b.commit()
+
+    assert n == 1  # only one of the duplicate-uuid rows inserted
+    assert _uuids(b) == {"x"}
+    assert b.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == 1
