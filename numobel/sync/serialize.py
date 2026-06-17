@@ -23,6 +23,14 @@ SNAPSHOT_TABLES = ("brands", "color_groups", "products", "color_links", "prices"
 #: re-export it without depending on the dump-side spelling.
 RESTORE_ORDER = SNAPSHOT_TABLES
 
+#: Tables carried by the shareable ``.xlsx`` snapshot (export/import round-trip).
+#: A superset of :data:`SNAPSHOT_TABLES`: the snapshot is a full database dump
+#: for backup/sharing, so it also carries the machine-local ``audit_log`` that
+#: Google sync deliberately omits. ``audit_log`` has no foreign keys, so it is
+#: safe to restore last.
+EXPORT_TABLES = (*SNAPSHOT_TABLES, "audit_log")
+EXPORT_RESTORE_ORDER = (*RESTORE_ORDER, "audit_log")
+
 
 def dump_table(conn: sqlite3.Connection, table: str) -> dict:
     """Dump one table as ``{"columns": [...], "rows": [[cell, ...], ...]}``.

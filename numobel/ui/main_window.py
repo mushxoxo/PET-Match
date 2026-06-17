@@ -302,7 +302,8 @@ class MainWindow(QMainWindow):
             self,
             "Export complete",
             f"Exported {summary['total_products']} products, "
-            f"{summary['prices']} price rows and {summary['images']} photos to:\n\n"
+            f"{summary['prices']} price rows, {summary['audit_log']} audit "
+            f"entries and {summary['images']} photos to:\n\n"
             f"{path}",
         )
 

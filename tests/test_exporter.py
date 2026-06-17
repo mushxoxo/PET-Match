@@ -56,6 +56,10 @@ def _sample_db() -> sqlite3.Connection:
             (id, seller, mrp, mrp_sft, dp, dp_sft, profit, discount,
              cust_price, cust_price_sft) VALUES
             (300, 'ACME', 100.0, 10.0, 80.0, 8.0, 20.0, 0.2, 90.0, 9.0);
+
+        INSERT INTO audit_log(id, ts, action, entity, entity_id, details) VALUES
+            (400, '2026-01-01T00:00:00', 'create', 'product', 100, '{"k": "v"}'),
+            (401, '2026-01-02T00:00:00', 'update', 'price', 300, NULL);
         """
     )
     conn.commit()
@@ -75,11 +79,14 @@ def test_roundtrip_preserves_all_tables(tmp_path):
     assert summary["total_products"] == 2
     assert summary["prices"] == 1
     assert summary["links"] == 2
+    assert summary["audit_log"] == 2
 
     dest = db.connect(":memory:")
     snapshot.restore(out, dest)
 
-    for table in snapshot.RESTORE_ORDER:
+    # EXPORT_RESTORE_ORDER includes audit_log, so this also asserts the audit
+    # log round-trips verbatim alongside the catalog tables.
+    for table in snapshot.EXPORT_RESTORE_ORDER:
         assert _dump(src, table) == _dump(dest, table), f"mismatch in {table}"
 
     # FK columns survive verbatim (color_group_id ties the two products).
@@ -99,6 +106,57 @@ def test_restore_summary_shape(tmp_path):
     assert summary["total_products"] == 2
     assert summary["prices"] == 1
     assert summary["links"] == {"resolved": 0, "unresolved": 1, "external": 1}
+    assert summary["audit_log"] == 2
+
+
+def test_import_replaces_local_audit_log(tmp_path):
+    """Restoring a snapshot replaces local audit history (no append/duplicate)."""
+    src = _sample_db()
+    out = str(tmp_path / "snap.xlsx")
+    export(excel_path=out, conn=src)
+
+    dest = db.connect(":memory:")
+    db.create_schema(dest)
+    # Pre-existing local history that must NOT survive the import.
+    dest.execute(
+        "INSERT INTO audit_log(id, ts, action, entity, entity_id, details) "
+        "VALUES (999, '2025-01-01T00:00:00', 'create', 'product', 1, NULL)"
+    )
+    dest.commit()
+
+    snapshot.restore(out, dest)
+
+    assert _dump(src, "audit_log") == _dump(dest, "audit_log")
+    ids = [r[0] for r in dest.execute("SELECT id FROM audit_log ORDER BY id")]
+    assert ids == [400, 401]  # the stale local row (999) is gone, no dupes
+
+
+def test_import_old_snapshot_without_audit_preserves_local(tmp_path):
+    """An older snapshot lacking an audit_log sheet leaves local history intact."""
+    from openpyxl import load_workbook
+
+    src = _sample_db()
+    out = str(tmp_path / "snap.xlsx")
+    export(excel_path=out, conn=src)
+
+    # Simulate a pre-feature snapshot by dropping the audit_log sheet.
+    wb = load_workbook(out)
+    del wb["audit_log"]
+    wb.save(out)
+
+    dest = db.connect(":memory:")
+    db.create_schema(dest)
+    dest.execute(
+        "INSERT INTO audit_log(id, ts, action, entity, entity_id, details) "
+        "VALUES (999, '2025-01-01T00:00:00', 'create', 'product', 1, NULL)"
+    )
+    dest.commit()
+
+    summary = snapshot.restore(out, dest)
+
+    ids = [r[0] for r in dest.execute("SELECT id FROM audit_log ORDER BY id")]
+    assert ids == [999]  # local history untouched
+    assert summary["audit_log"] == 0
 
 
 def test_photo_embedding_roundtrip(tmp_path, monkeypatch):

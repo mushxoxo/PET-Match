@@ -19,7 +19,7 @@ from openpyxl import Workbook
 
 from numobel import db
 from numobel.importer.snapshot import FORMAT, SNAPSHOT_VERSION
-from numobel.sync.serialize import SNAPSHOT_TABLES, dump_table
+from numobel.sync.serialize import EXPORT_TABLES, dump_table
 
 #: Base64 chunk size, kept under Excel's ~32,767-character per-cell limit.
 _CHUNK = 32000
@@ -75,7 +75,7 @@ def export(excel_path: str, conn: sqlite3.Connection) -> dict:
     meta.append(["version", SNAPSHOT_VERSION])
     meta.append(["exported_at", datetime.now().isoformat(timespec="seconds")])
 
-    counts = {t: _dump_table(wb, conn, t) for t in SNAPSHOT_TABLES}
+    counts = {t: _dump_table(wb, conn, t) for t in EXPORT_TABLES}
     images = _embed_images(wb, conn)
     wb.save(excel_path)
 
@@ -83,5 +83,6 @@ def export(excel_path: str, conn: sqlite3.Connection) -> dict:
         "total_products": counts["products"],
         "prices": counts["prices"],
         "links": counts["color_links"],
+        "audit_log": counts["audit_log"],
         "images": images,
     }

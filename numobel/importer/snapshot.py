@@ -21,7 +21,7 @@ from openpyxl import load_workbook
 from numobel import db
 from numobel.importer.run_import import build
 from numobel.sync import serialize
-from numobel.sync.serialize import RESTORE_ORDER
+from numobel.sync.serialize import EXPORT_RESTORE_ORDER
 
 #: Identifier written to (and matched in) the snapshot ``_meta`` sheet.
 FORMAT = "numobel-snapshot"
@@ -31,7 +31,7 @@ SNAPSHOT_VERSION = 1
 __all__ = [
     "FORMAT",
     "SNAPSHOT_VERSION",
-    "RESTORE_ORDER",
+    "EXPORT_RESTORE_ORDER",
     "is_snapshot",
     "restore",
     "import_workbook",
@@ -137,11 +137,20 @@ def restore(excel_path: str, conn: sqlite3.Connection) -> dict:
         db.create_schema(conn)
         db.reset_catalog(conn)
 
+        # audit_log round-trips with the snapshot (a full DB dump) but is
+        # machine-local for sync, so reset_catalog deliberately keeps it. When
+        # the snapshot carries an audit_log sheet, replace local history with the
+        # snapshot's (clear first so rows are not appended); an older snapshot
+        # without the sheet leaves local history untouched.
+        if "audit_log" in wb.sheetnames:
+            conn.execute("DELETE FROM audit_log")
+
         link_tallies = {"resolved": 0, "unresolved": 0, "external": 0}
         product_count = 0
         price_count = 0
+        audit_count = 0
 
-        for table in RESTORE_ORDER:
+        for table in EXPORT_RESTORE_ORDER:
             records = list(_read_sheet(wb, table))
             if not records:
                 continue
@@ -152,6 +161,8 @@ def restore(excel_path: str, conn: sqlite3.Connection) -> dict:
                 product_count += len(records)
             elif table == "prices":
                 price_count += len(records)
+            elif table == "audit_log":
+                audit_count += len(records)
             elif table == "color_links":
                 for rec in records:
                     status = rec.get("status")
@@ -168,6 +179,7 @@ def restore(excel_path: str, conn: sqlite3.Connection) -> dict:
         "prices": price_count,
         "links": link_tallies,
         "total_links": sum(link_tallies.values()),
+        "audit_log": audit_count,
         "images": images,
     }
 
