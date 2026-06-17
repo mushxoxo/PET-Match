@@ -22,6 +22,7 @@ tests) never requires the libraries to be present.
 from __future__ import annotations
 
 import json
+import re
 
 from numobel.sync import errors
 from numobel.sync.backend import Backend
@@ -140,6 +141,41 @@ def readable_table_rows(data: dict, table: str) -> list[list]:
 
 
 # --------------------------------------------------------------------------- #
+# Spreadsheet discovery / adoption helpers
+# --------------------------------------------------------------------------- #
+def extract_spreadsheet_id(text: str) -> str:
+    """From a Google Sheets URL or a bare id, return the spreadsheet id.
+
+    Pulls the id out of a ``/d/<id>/`` URL; passes through a bare id-looking
+    token; otherwise returns the stripped input (let the API surface a clear
+    error).
+    """
+    text = text.strip()
+    if "/d/" in text:
+        match = re.search(r"/d/([a-zA-Z0-9-_]+)", text)
+        if match:
+            return match.group(1)
+    if re.fullmatch(r"[A-Za-z0-9-_]{20,}", text):
+        return text
+    return text
+
+
+def classify_adopt(tab_titles: list[str]) -> str:
+    """Classify an existing spreadsheet by its tab titles for adoption.
+
+    Returns ``"numobel"`` (our format: both ``_data`` and ``_meta`` present),
+    ``"empty"`` (blank/new sheet — no tabs, or only a default ``"Sheet1"``),
+    or ``"foreign"`` (has unrelated tabs but isn't ours).
+    """
+    titles = set(tab_titles)
+    if DATA_TAB in titles and META_TAB in titles:
+        return "numobel"
+    if not titles or titles <= {"Sheet1"}:
+        return "empty"
+    return "foreign"
+
+
+# --------------------------------------------------------------------------- #
 # A1 range helpers
 # --------------------------------------------------------------------------- #
 def _quote_tab(name: str) -> str:
@@ -239,26 +275,45 @@ class GoogleBackend(Backend):
                 "photo_folder_id": self.photo_folder_id,
             }
 
-        sheets, drive = self._services()
+        sheets, _ = self._services()
 
         if not self.spreadsheet_id:
-            sheet_specs = []
-            for table in SNAPSHOT_TABLES:
-                sheet_specs.append({"properties": {"title": table}})
-            for hidden in (DATA_TAB, META_TAB, PHOTOS_TAB):
-                sheet_specs.append(
-                    {"properties": {"title": hidden, "hidden": True}}
-                )
             body = {
                 "properties": {"title": self.SPREADSHEET_TITLE},
-                "sheets": sheet_specs,
+                "sheets": self._required_sheet_specs(),
             }
             result = self._execute(
                 sheets.spreadsheets().create(body=body, fields="spreadsheetId")
             )
             self.spreadsheet_id = result["spreadsheetId"]
 
+        self._ensure_photo_folder()
+
+        return {
+            "spreadsheet_id": self.spreadsheet_id,
+            "photo_folder_id": self.photo_folder_id,
+        }
+
+    @staticmethod
+    def _required_sheet_specs() -> list[dict]:
+        """The ``sheets`` create-body specs for every tab we provision.
+
+        Single source of truth shared by :meth:`ensure_spreadsheet` (create body)
+        and :meth:`_add_missing_tabs` (batchUpdate addSheet). Visible
+        :data:`SNAPSHOT_TABLES` first, then the hidden ``_data``/``_meta``/
+        ``_photos`` bookkeeping tabs.
+        """
+        specs: list[dict] = []
+        for table in SNAPSHOT_TABLES:
+            specs.append({"properties": {"title": table}})
+        for hidden in (DATA_TAB, META_TAB, PHOTOS_TAB):
+            specs.append({"properties": {"title": hidden, "hidden": True}})
+        return specs
+
+    def _ensure_photo_folder(self) -> str:
+        """Create the Drive photo folder if not already set; return its id."""
         if not self.photo_folder_id:
+            _, drive = self._services()
             folder = self._execute(
                 drive.files().create(
                     body={
@@ -269,10 +324,115 @@ class GoogleBackend(Backend):
                 )
             )
             self.photo_folder_id = folder["id"]
+        return self.photo_folder_id
+
+    def _add_missing_tabs(self, existing_titles) -> None:
+        """Add any required tabs absent from ``self.spreadsheet_id``.
+
+        Computes which of :meth:`_required_sheet_specs` are missing (by title)
+        and adds them in one ``batchUpdate`` ``addSheet`` call, preserving the
+        hidden flag for the bookkeeping tabs. No-op when nothing is missing.
+        """
+        present = set(existing_titles)
+        requests = [
+            {"addSheet": spec}
+            for spec in self._required_sheet_specs()
+            if spec["properties"]["title"] not in present
+        ]
+        if not requests:
+            return
+        sheets, _ = self._services()
+        self._execute(
+            sheets.spreadsheets().batchUpdate(
+                spreadsheetId=self.spreadsheet_id,
+                body={"requests": requests},
+            )
+        )
+
+    # -- discovery / adoption ---------------------------------------------- #
+    def list_catalog_spreadsheets(self) -> list[dict]:
+        """List spreadsheets this app can see (via ``drive.file`` scope).
+
+        Under the per-file ``drive.file`` scope this is exactly the set of
+        spreadsheets this app created. Returns ``[{"id","name","modifiedTime"}]``
+        newest-first (single page; up to 100).
+        """
+        _, drive = self._services()
+        result = self._execute(
+            drive.files().list(
+                q="mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+                fields="files(id,name,modifiedTime)",
+                orderBy="modifiedTime desc",
+                pageSize=100,
+            )
+        )
+        return [
+            {
+                "id": f["id"],
+                "name": f["name"],
+                "modifiedTime": f.get("modifiedTime", ""),
+            }
+            for f in result.get("files", [])
+        ]
+
+    def adopt_spreadsheet(self, spreadsheet_id: str) -> dict:
+        """Adopt an existing spreadsheet as the linked catalog.
+
+        Inspects its tabs: a ``"foreign"`` sheet is rejected with
+        :class:`errors.NotNumobelSheetError`; an ``"empty"`` sheet is
+        provisioned with our tabs (revision 0); a ``"numobel"`` sheet has its
+        meta/revision read back. Recovers (or recreates) the Drive photo folder.
+        Returns ``{"spreadsheet_id","photo_folder_id","revision","is_numobel"}``.
+        """
+        self.spreadsheet_id = spreadsheet_id
+        sheets, drive = self._services()
+
+        info = self._execute(
+            sheets.spreadsheets().get(
+                spreadsheetId=self.spreadsheet_id,
+                fields="sheets.properties.title",
+            )
+        )
+        titles = [s["properties"]["title"] for s in info.get("sheets", [])]
+        kind = classify_adopt(titles)
+
+        if kind == "foreign":
+            raise errors.NotNumobelSheetError(
+                "This spreadsheet isn't a NUMOBEL catalog. Pick another or "
+                "create a new one."
+            )
+
+        if kind == "empty":
+            self._add_missing_tabs(titles)
+            revision = 0
+            meta: dict = {}
+        else:  # numobel
+            meta = self.read_meta()
+            revision = int(meta.get("revision", 0) or 0)
+
+        # Photo folder recovery: verify the recorded folder still exists / is
+        # usable, else create a fresh one.
+        folder = meta.get("photo_folder_id")
+        if folder:
+            try:
+                got = self._execute(
+                    drive.files().get(fileId=folder, fields="id,trashed")
+                )
+                if got.get("trashed"):
+                    folder = None
+            except errors.SheetMissingError:
+                folder = None
+        if folder:
+            self.photo_folder_id = folder
+        else:
+            self.photo_folder_id = None
+            self._ensure_photo_folder()
 
         return {
             "spreadsheet_id": self.spreadsheet_id,
             "photo_folder_id": self.photo_folder_id,
+            "revision": revision,
+            "is_numobel": True,
         }
 
     # -- low-level Sheets value IO ----------------------------------------- #

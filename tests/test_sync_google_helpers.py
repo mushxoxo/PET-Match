@@ -158,6 +158,40 @@ def test_readable_table_rows_missing_table():
 
 
 # --------------------------------------------------------------------------- #
+# spreadsheet id extraction
+# --------------------------------------------------------------------------- #
+def test_extract_spreadsheet_id_from_full_url():
+    url = "https://docs.google.com/spreadsheets/d/1AbC_-xyz0123456789/edit#gid=0"
+    assert gb.extract_spreadsheet_id(url) == "1AbC_-xyz0123456789"
+
+
+def test_extract_spreadsheet_id_passes_through_bare_id():
+    bare = "1AbCdEfGhIjKlMnOpQrStUv"  # 23 chars, id-looking
+    assert len(bare) >= 20
+    assert gb.extract_spreadsheet_id(bare) == bare
+
+
+def test_extract_spreadsheet_id_returns_stripped_garbage():
+    assert gb.extract_spreadsheet_id("  nope  ") == "nope"
+
+
+# --------------------------------------------------------------------------- #
+# adopt classification
+# --------------------------------------------------------------------------- #
+def test_classify_adopt_numobel():
+    assert gb.classify_adopt(["_data", "_meta", "products"]) == "numobel"
+
+
+def test_classify_adopt_empty():
+    assert gb.classify_adopt([]) == "empty"
+    assert gb.classify_adopt(["Sheet1"]) == "empty"
+
+
+def test_classify_adopt_foreign():
+    assert gb.classify_adopt(["Budget", "Notes"]) == "foreign"
+
+
+# --------------------------------------------------------------------------- #
 # offline guarantee: importing this module never imported googleapiclient
 # --------------------------------------------------------------------------- #
 def test_no_google_import_triggered():
