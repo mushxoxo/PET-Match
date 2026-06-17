@@ -12,7 +12,7 @@ import sqlite3
 
 import pytest
 
-from numobel import db
+from numobel import audit, db
 from numobel.sync import engine, serialize, state
 from numobel.sync.errors import ConflictError, is_offline_error
 from tests.sync_fakes import FakeBackend
@@ -319,3 +319,100 @@ def test_resolve_conflict_local_uploads_real_photo(tmp_path, monkeypatch):
     # The photo is tracked in the rebuilt map and present in cloud blob storage.
     assert any(row["product_id"] == 100 for row in backend.read_photo_map())
     assert len(backend.photo_store) >= 1
+
+
+def _audit_uuids(conn: sqlite3.Connection) -> set:
+    return {r[0] for r in conn.execute("SELECT uuid FROM audit_log")}
+
+
+def test_push_then_pull_carries_audit_log():
+    """A push unions the audit log to the cloud; a fresh device's pull absorbs it."""
+    src = _sample_db()
+    audit.log_change(src, "create", "product", entity_id=100)
+    audit.log_change(src, "update", "product", entity_id=100)
+    src.commit()
+    src_uuids = _audit_uuids(src)
+    assert len(src_uuids) == 2
+
+    backend = FakeBackend()
+    push_result = engine.push(src, backend)
+    assert push_result.audit == 2  # merged cloud audit-log size
+    assert len(backend.audit_log) == 2
+    # push must NOT mutate the local audit log.
+    assert _audit_uuids(src) == src_uuids
+
+    dest = db.connect(":memory:")
+    db.create_schema(dest)
+    pull_result = engine.pull(dest, backend)
+
+    assert pull_result.audit == 2  # entries absorbed
+    assert _audit_uuids(dest) == src_uuids
+
+
+def test_resolve_conflict_cloud_preserves_local_audit():
+    """Keep-cloud replaces the local catalog but preserves the device's audit log."""
+    local = _sample_db()
+    # The local device has its own audit history.
+    audit.log_change(local, "delete", "product", entity_id=100)
+    local.commit()
+    local_audit = _audit_uuids(local)
+    assert len(local_audit) == 1
+
+    backend = FakeBackend()
+    # Seed cloud with a DIFFERENT catalog AND a different audit entry at rev 5.
+    cloud = db.connect(":memory:")
+    db.create_schema(cloud)
+    cloud.execute(
+        "INSERT INTO brands(id, code, name, has_sheet) VALUES (9, 'ZZ', 'Zed', 1)"
+    )
+    audit.log_change(cloud, "create", "brand", entity_id=9)
+    cloud.commit()
+    backend.write_all(serialize.dump_rows(cloud))
+    backend.audit_log = audit_sync_rows(cloud)
+    backend.write_meta({"revision": "5"})
+    cloud_audit = _audit_uuids(cloud)
+
+    result = engine.resolve_conflict(local, backend, "cloud")
+
+    assert isinstance(result, engine.PullResult)
+    # Catalog was replaced with the cloud's.
+    for table in serialize.SNAPSHOT_TABLES:
+        assert _dump(local, table) == _dump(cloud, table), f"mismatch in {table}"
+    # KEY GUARANTEE: the device's own audit history survives, plus cloud's absorbed.
+    after = _audit_uuids(local)
+    assert local_audit <= after  # local history NOT lost
+    assert cloud_audit <= after  # cloud history absorbed
+    assert after == local_audit | cloud_audit
+
+
+def test_resolve_conflict_local_unions_audit():
+    """Keep-local writes the audit union to the cloud (both sides retained)."""
+    src = _sample_db()
+    audit.log_change(src, "create", "product", entity_id=100)
+    src.commit()
+    src_audit = _audit_uuids(src)
+
+    backend = FakeBackend()
+    # Cloud already holds another device's audit entry.
+    other = db.connect(":memory:")
+    db.create_schema(other)
+    audit.log_change(other, "update", "brand", entity_id=1)
+    other.commit()
+    backend.audit_log = audit_sync_rows(other)
+    other_audit = _audit_uuids(other)
+    backend.write_meta({"revision": "5"})  # conflict state
+
+    result = engine.resolve_conflict(src, backend, "local")
+
+    assert isinstance(result, engine.PushResult)
+    cloud_uuids = {r["uuid"] for r in backend.audit_log}
+    assert src_audit <= cloud_uuids  # this device's entry pushed
+    assert other_audit <= cloud_uuids  # other device's entry retained
+    assert result.audit == len(cloud_uuids)
+
+
+def audit_sync_rows(conn):
+    """Cloud-shaped audit rows for a connection (test helper)."""
+    from numobel.sync import audit_sync
+
+    return audit_sync.local_audit_rows(conn)

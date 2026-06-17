@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from numobel import db
-from numobel.sync import photos, serialize, state
+from numobel.sync import audit_sync, photos, serialize, state
 from numobel.sync.errors import ConflictError
 
 #: Marker identifying a spreadsheet as a numobel sync target. Distinct from the
@@ -49,10 +49,13 @@ class PushResult:
     (``len(photo_map)``), i.e. the count of products that currently have a local
     photo — NOT necessarily the number newly uploaded this push (unchanged
     photos reuse their existing Drive id without re-uploading).
+
+    ``audit`` is the merged cloud audit-log size (local UNION cloud) after push.
     """
 
     revision: int
     photos: int
+    audit: int = 0
 
 
 @dataclass
@@ -62,11 +65,14 @@ class PullResult:
     ``photos`` here IS the actual number of files downloaded this pull (unchanged
     files already present locally are not re-downloaded), unlike
     :attr:`PushResult.photos` which is the map size.
+
+    ``audit`` is the number of audit entries absorbed this pull.
     """
 
     revision: int
     tables: dict = field(default_factory=dict)
     photos: int = 0
+    audit: int = 0
 
 
 def _now() -> str:
@@ -104,6 +110,7 @@ def _do_push(conn, backend, new_rev: int) -> PushResult:
     data = serialize.dump_rows(conn)
     backend.write_all(data)
     photo_map = photos.push_photos(conn, backend)
+    audit_n = audit_sync.push_audit(conn, backend)
     backend.write_meta(
         {
             "format": META_FORMAT,
@@ -120,7 +127,7 @@ def _do_push(conn, backend, new_rev: int) -> PushResult:
     # Only once the cloud is fully written do we record that we are in sync.
     state.set_last_synced_revision(conn, new_rev)
     state.set_pending(conn, False)
-    return PushResult(revision=new_rev, photos=len(photo_map))
+    return PushResult(revision=new_rev, photos=len(photo_map), audit=audit_n)
 
 
 def push(conn, backend) -> PushResult:
@@ -158,6 +165,8 @@ def pull(conn, backend) -> PullResult:
     tables = serialize.restore_rows(conn, data)
     db.migrate(conn)
     photos_n = photos.pull_photos(conn, backend)
+    # migrate() above guarantees the uuid column exists before we absorb.
+    audit_n = audit_sync.pull_audit(conn, backend)
 
     # Stage the watermark + pending flag on the SAME connection and let the
     # single commit below flush them together with the restored catalog rows
@@ -170,7 +179,7 @@ def pull(conn, backend) -> PullResult:
     _stage_setting(conn, state.KEY_PENDING, "0")
     conn.commit()
 
-    return PullResult(revision=cloud_rev, tables=tables, photos=photos_n)
+    return PullResult(revision=cloud_rev, tables=tables, photos=photos_n, audit=audit_n)
 
 
 def resolve_conflict(conn, backend, choice):
