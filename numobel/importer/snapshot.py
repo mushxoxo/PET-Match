@@ -137,8 +137,8 @@ def restore(excel_path: str, conn: sqlite3.Connection) -> dict:
         db.create_schema(conn)
         db.reset_catalog(conn)
 
-        # audit_log round-trips with the snapshot (a full DB dump) but is
-        # machine-local for sync, so reset_catalog deliberately keeps it. When
+        # audit_log round-trips with the snapshot (a full DB dump). reset_catalog
+        # deliberately keeps it (it's change history, not catalog state). When
         # the snapshot carries an audit_log sheet, replace local history with the
         # snapshot's (clear first so rows are not appended); an older snapshot
         # without the sheet leaves local history untouched.

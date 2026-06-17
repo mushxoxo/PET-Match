@@ -169,8 +169,9 @@ def pull(conn, backend) -> PullResult:
     audit_n = audit_sync.pull_audit(conn, backend)
 
     # Stage the watermark + pending flag on the SAME connection and let the
-    # single commit below flush them together with the restored catalog rows
-    # (Fix 1). Going through the committing state.* helpers here would split this
+    # single commit below flush them together with the audit rows absorbed just
+    # above (Fix 1; db.migrate() above already committed the restored catalog).
+    # Going through the committing state.* helpers here would split this
     # into multiple transactions: a crash between the catalog commit and the
     # watermark write would leave the local catalog at cloud_rev but last_synced
     # stale, surfacing a spurious ConflictError on the next push. state.KEY_* are

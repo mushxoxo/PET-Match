@@ -15,8 +15,12 @@ from __future__ import annotations
 
 import sqlite3
 
-#: Tables dumped/restored, in foreign-key-safe order. Machine-local tables
-#: (``audit_log``, ``settings``) are deliberately excluded.
+#: Catalog tables dumped/restored in foreign-key-safe order — the full-replace
+#: set shared by Google sync and the ``.xlsx`` snapshot. ``settings`` is
+#: machine-local and never synced. ``audit_log`` is excluded here too, but it IS
+#: synced — via a SEPARATE append-only merge channel (see
+#: :mod:`numobel.sync.audit_sync`), not this full-replace set — and is added back
+#: to the snapshot via :data:`EXPORT_TABLES`.
 SNAPSHOT_TABLES = ("brands", "color_groups", "products", "color_links", "prices")
 
 #: Restore order alias — a separate public name so callers (snapshot.py) can
@@ -25,9 +29,10 @@ RESTORE_ORDER = SNAPSHOT_TABLES
 
 #: Tables carried by the shareable ``.xlsx`` snapshot (export/import round-trip).
 #: A superset of :data:`SNAPSHOT_TABLES`: the snapshot is a full database dump
-#: for backup/sharing, so it also carries the machine-local ``audit_log`` that
-#: Google sync deliberately omits. ``audit_log`` has no foreign keys, so it is
-#: safe to restore last.
+#: for backup/sharing, so it also carries ``audit_log`` as plain rows. (Google
+#: sync also syncs ``audit_log``, but via the separate append-only merge channel
+#: in :mod:`numobel.sync.audit_sync`, not as part of this full-replace set.)
+#: ``audit_log`` has no foreign keys, so it is safe to restore last.
 EXPORT_TABLES = (*SNAPSHOT_TABLES, "audit_log")
 EXPORT_RESTORE_ORDER = (*RESTORE_ORDER, "audit_log")
 
