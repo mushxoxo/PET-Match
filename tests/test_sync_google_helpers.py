@@ -168,6 +168,28 @@ def test_audit_empty_and_header_only():
     assert gb.rows_to_audit(gb.audit_to_rows([])) == []
 
 
+def test_rows_to_audit_keeps_entity_id_zero():
+    # entity_id 0 is falsy but a legitimate id: it must round-trip as int 0,
+    # never None and never dropped (guards against a future `if entity_id:`).
+    entries = [
+        {"uuid": "u0", "ts": "2026-01-01T00:00:00", "action": "create",
+         "entity": "brand", "entity_id": 0, "details": "zero int"},
+    ]
+    back = gb.rows_to_audit(gb.audit_to_rows(entries))
+    assert back == entries
+    assert back[0]["entity_id"] == 0
+    assert isinstance(back[0]["entity_id"], int)
+
+    # And via the string "0" as Sheets would return it.
+    rows = [
+        gb._AUDIT_COLUMNS,
+        ["u0", "2026-01-01T00:00:00", "create", "brand", "0", "zero str"],
+    ]
+    back = gb.rows_to_audit(rows)
+    assert back[0]["entity_id"] == 0
+    assert isinstance(back[0]["entity_id"], int)
+
+
 def test_audit_drops_blank_uuid_keeps_nonint_entity_id():
     rows = [
         gb._AUDIT_COLUMNS,

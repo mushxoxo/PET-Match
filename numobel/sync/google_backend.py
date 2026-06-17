@@ -330,6 +330,10 @@ class GoogleBackend(Backend):
 
         self._ensure_photo_folder()
 
+        # The create body / _required_sheet_specs includes AUDIT_TAB, so the
+        # _audit tab is guaranteed present here — skip the lazy metadata GET.
+        self._audit_tab_ready = True
+
         return {
             "spreadsheet_id": self.spreadsheet_id,
             "photo_folder_id": self.photo_folder_id,
@@ -496,6 +500,11 @@ class GoogleBackend(Backend):
         else:
             self.photo_folder_id = None
             self._ensure_photo_folder()
+
+        # Both the "empty" and "numobel" branches call _add_missing_tabs(titles),
+        # which provisions any missing required tab including _audit — so the
+        # _audit tab is guaranteed present here; skip the lazy metadata GET.
+        self._audit_tab_ready = True
 
         return {
             "spreadsheet_id": self.spreadsheet_id,
