@@ -17,11 +17,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox  # noqa: E402
 
 from numobel import db  # noqa: E402
 from numobel.sync import state  # noqa: E402
 from numobel.sync.service import SyncService  # noqa: E402
+from numobel.ui.link_spreadsheet_dialog import LinkSpreadsheetDialog  # noqa: E402
 from numobel.ui.main_window import _ONBOARDING, _SHELL, MainWindow  # noqa: E402
 from tests.sync_fakes import FakeBackend  # noqa: E402
 
@@ -327,6 +328,124 @@ def test_connect_uses_bundled_client_without_dialog(app, conn, service, monkeypa
         assert collected == []
         assert infos == []
         assert connects == [()]
+    finally:
+        window.close()
+
+
+# --------------------------------------------------------------------------- #
+# Link spreadsheet dialog wiring
+# --------------------------------------------------------------------------- #
+def test_needs_spreadsheet_opens_link_dialog(app, conn, service, monkeypatch):
+    monkeypatch.setattr(
+        LinkSpreadsheetDialog, "exec", lambda self: QDialog.Accepted
+    )
+    monkeypatch.setattr(
+        LinkSpreadsheetDialog, "selected_choice", lambda self: ""
+    )
+    links = []
+    listed = []
+    monkeypatch.setattr(service, "link_spreadsheet", lambda c: links.append(c))
+    monkeypatch.setattr(service, "list_spreadsheets", lambda: listed.append(True))
+    window = MainWindow(conn, sync_service=service)
+    try:
+        service.needsSpreadsheet.emit()
+        assert listed == [True]
+        assert links == [""]
+    finally:
+        window.close()
+
+
+def test_link_menu_action_links_pasted_id(app, conn, service, monkeypatch):
+    monkeypatch.setattr(
+        LinkSpreadsheetDialog, "exec", lambda self: QDialog.Accepted
+    )
+    monkeypatch.setattr(
+        LinkSpreadsheetDialog, "selected_choice", lambda self: "sheet-1"
+    )
+    links = []
+    listed = []
+    monkeypatch.setattr(service, "link_spreadsheet", lambda c: links.append(c))
+    monkeypatch.setattr(service, "list_spreadsheets", lambda: listed.append(True))
+    window = MainWindow(conn, sync_service=service)
+    try:
+        window._link_spreadsheet()
+        assert listed == [True]
+        assert links == ["sheet-1"]
+    finally:
+        window.close()
+
+
+def test_link_dialog_cancel_does_nothing(app, conn, service, monkeypatch):
+    monkeypatch.setattr(
+        LinkSpreadsheetDialog, "exec", lambda self: QDialog.Rejected
+    )
+    links = []
+    monkeypatch.setattr(service, "link_spreadsheet", lambda c: links.append(c))
+    monkeypatch.setattr(service, "list_spreadsheets", lambda: None)
+    window = MainWindow(conn, sync_service=service)
+    try:
+        window._link_spreadsheet()
+        assert links == []
+    finally:
+        window.close()
+
+
+def test_spreadsheets_listed_populates_open_dialog(app, conn, service):
+    window = MainWindow(conn, sync_service=service)
+    try:
+        dlg = LinkSpreadsheetDialog(window)
+        window._link_dialog = dlg
+        service.spreadsheetsListed.emit(
+            [{"id": "x", "name": "X", "modifiedTime": "t"}]
+        )
+        assert dlg._list.count() == 1
+    finally:
+        window.close()
+
+
+def test_not_numobel_error_warns(app, conn, service, monkeypatch):
+    shown = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", staticmethod(lambda *a, **k: shown.append(a))
+    )
+    window = MainWindow(conn, sync_service=service)
+    try:
+        service.errored.emit("not_numobel", "nope")
+        assert len(shown) == 1
+        assert "NUMOBEL" in shown[0][2]
+    finally:
+        window.close()
+
+
+# --------------------------------------------------------------------------- #
+# Reset / start fresh
+# --------------------------------------------------------------------------- #
+def test_reset_clears_catalog_and_returns_to_onboarding(
+    app, conn, service, monkeypatch
+):
+    _seed_catalog(conn)
+    disconnects = []
+    monkeypatch.setattr(service, "disconnect", lambda: disconnects.append(True))
+    window = MainWindow(conn, sync_service=service)
+    try:
+        window._reset_app()
+        assert disconnects == [True]
+        assert conn.execute("SELECT 1 FROM products LIMIT 1").fetchone() is None
+        assert window._outer.currentIndex() == _ONBOARDING
+    finally:
+        window.close()
+
+
+def test_reset_cancel_keeps_data(app, conn, service, monkeypatch):
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No)
+    )
+    _seed_catalog(conn)
+    window = MainWindow(conn, sync_service=service)
+    try:
+        window._reset_app()
+        assert conn.execute("SELECT 1 FROM products LIMIT 1").fetchone() is not None
+        assert window._outer.currentIndex() != _ONBOARDING
     finally:
         window.close()
 

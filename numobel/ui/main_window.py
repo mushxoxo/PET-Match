@@ -29,6 +29,7 @@ from numobel.sync import state
 from numobel.ui import theme
 from numobel.ui.audit_tab import AuditTab
 from numobel.ui.catalog_tab import CatalogTab
+from numobel.ui.link_spreadsheet_dialog import LinkSpreadsheetDialog
 from numobel.ui.onboarding import OnboardingWidget
 from numobel.ui.price_tab import PriceTab
 from numobel.ui.sidebar import Sidebar
@@ -76,6 +77,7 @@ class MainWindow(QMainWindow):
             _SHELL if self._has_catalog() else _ONBOARDING
         )
 
+        self._link_dialog = None
         self._wire_sync_signals()
 
     def _build_status_bar(self) -> None:
@@ -103,6 +105,8 @@ class MainWindow(QMainWindow):
         self._sync.conflictDetected.connect(self._on_conflict)
         self._sync.errored.connect(self._on_sync_error)
         self._sync.offlineNotice.connect(self._on_offline_notice)
+        self._sync.needsSpreadsheet.connect(self._on_needs_spreadsheet)
+        self._sync.spreadsheetsListed.connect(self._on_spreadsheets_listed)
 
     def _build_shell(self) -> QWidget:
         shell = QWidget()
@@ -166,6 +170,9 @@ class MainWindow(QMainWindow):
         connect_action = QAction("Connect Google…", self)
         connect_action.triggered.connect(self._connect_google)
         google_menu.addAction(connect_action)
+        link_action = QAction("Link spreadsheet…", self)
+        link_action.triggered.connect(self._link_spreadsheet)
+        google_menu.addAction(link_action)
         reload_action = QAction("Reload from Google", self)
         reload_action.triggered.connect(self._google_pull)
         google_menu.addAction(reload_action)
@@ -176,6 +183,10 @@ class MainWindow(QMainWindow):
         disconnect_action = QAction("Disconnect", self)
         disconnect_action.triggered.connect(self._google_disconnect)
         google_menu.addAction(disconnect_action)
+        google_menu.addSeparator()
+        reset_action = QAction("Start fresh / Reset…", self)
+        reset_action.triggered.connect(self._reset_app)
+        google_menu.addAction(reset_action)
 
     # ------------------------------------------------------------------ #
     # Import
@@ -430,6 +441,53 @@ class MainWindow(QMainWindow):
             self._connect_google()
 
     # ------------------------------------------------------------------ #
+    # Link spreadsheet / reset
+    # ------------------------------------------------------------------ #
+    def _open_link_dialog(self) -> None:
+        """Prompt the user to create, pick, or paste a spreadsheet to link."""
+        if self._sync_unavailable():
+            return
+
+        from numobel.sync.worker import STATUS_DISCONNECTED
+
+        dlg = LinkSpreadsheetDialog(self)
+        self._link_dialog = dlg
+        # Async: results arrive via spreadsheetsListed -> _on_spreadsheets_listed.
+        self._sync.list_spreadsheets()
+        accepted = dlg.exec() == QDialog.Accepted
+        self._link_dialog = None
+
+        if accepted:
+            self._sync.link_spreadsheet(dlg.selected_choice())
+        elif not state.is_linked(self._conn):
+            # Cancelled before linking: keep the status pill honest.
+            self._on_sync_status(STATUS_DISCONNECTED)
+
+    def _link_spreadsheet(self) -> None:
+        """Menu handler for "Link spreadsheet…"."""
+        self._open_link_dialog()
+
+    def _reset_app(self) -> None:
+        """Confirm, then erase the local catalog and unlink Google sync."""
+        answer = QMessageBox.question(
+            self,
+            "Start fresh?",
+            "This erases the local catalog AND unlinks Google sync. This cannot "
+            "be undone.\n\nContinue?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        if self._sync is not None:
+            self._sync.disconnect()
+        db.reset_catalog(self._conn)
+        self.catalog_tab.refresh()
+        self.price_tab.refresh()
+        self.audit_tab.refresh()
+        self._outer.setCurrentIndex(_ONBOARDING)
+
+    # ------------------------------------------------------------------ #
     # Sync service signal handlers
     # ------------------------------------------------------------------ #
     def _on_sync_status(self, text: str) -> None:
@@ -487,8 +545,24 @@ class MainWindow(QMainWindow):
                 "deleted or moved. Reconnect or relink to create a new one.\n\n"
                 f"{message}",
             )
+        elif kind == "not_numobel":
+            QMessageBox.warning(
+                self,
+                "Not a NUMOBEL sheet",
+                "That spreadsheet isn't a NUMOBEL catalog. Pick another from the "
+                "list or create a new one.\n\n" + message,
+            )
         else:
             QMessageBox.warning(self, "Sync error", message)
+
+    def _on_needs_spreadsheet(self) -> None:
+        """The worker connected but is not yet linked: prompt to link."""
+        self._open_link_dialog()
+
+    def _on_spreadsheets_listed(self, items) -> None:
+        """Populate the open link dialog with the user's spreadsheets."""
+        if self._link_dialog is not None:
+            self._link_dialog.set_spreadsheets(items)
 
     def _on_offline_notice(self) -> None:
         QMessageBox.information(
