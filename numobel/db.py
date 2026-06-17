@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import sqlite3
 import sys
-import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -182,9 +181,10 @@ def migrate(conn: sqlite3.Connection) -> None:
     """Bring an existing database up to the current schema (idempotent).
 
     Adds the ``color_groups`` table and ``products.color_group_id`` column when
-    missing, then folds any ``resolved`` color_links into color groups so that
-    "similar colors" behave as transitive equivalence classes rather than a
-    sparse set of one-hop edges. Safe to call on every startup.
+    missing, adds and backfills the ``audit_log.uuid`` column (the cross-device
+    merge key) resumably, then folds any ``resolved`` color_links into color
+    groups so that "similar colors" behave as transitive equivalence classes
+    rather than a sparse set of one-hop edges. Safe to call on every startup.
     """
     create_schema(conn)  # ensures color_groups table + indexes exist
 
@@ -202,17 +202,20 @@ def migrate(conn: sqlite3.Connection) -> None:
     acols = {row["name"] for row in conn.execute("PRAGMA table_info(audit_log)")}
     if "uuid" not in acols:
         conn.execute("ALTER TABLE audit_log ADD COLUMN uuid TEXT")
-        for row in conn.execute(
-            "SELECT id FROM audit_log WHERE uuid IS NULL"
-        ).fetchall():
-            conn.execute(
-                "UPDATE audit_log SET uuid = ? WHERE id = ?",
-                (uuid.uuid4().hex, row[0]),
-            )
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uidx_audit_log_uuid "
-            "ON audit_log(uuid)"
-        )
+    # Backfill + unique index run UNCONDITIONALLY: the column is now guaranteed
+    # to exist (pre-existing or just added). ``ALTER TABLE ADD COLUMN``
+    # auto-commits in SQLite, so a crash between the ADD and the backfill would
+    # otherwise leave rows NULL forever (the guard above would skip them on the
+    # next run). The ``WHERE uuid IS NULL`` set-based UPDATE is idempotent and
+    # resumable — a no-op once every row is filled. ``lower(hex(randomblob(16)))``
+    # yields a 32-char lowercase hex id matching ``uuid.uuid4().hex``.
+    conn.execute(
+        "UPDATE audit_log SET uuid = lower(hex(randomblob(16))) WHERE uuid IS NULL"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uidx_audit_log_uuid "
+        "ON audit_log(uuid)"
+    )
 
     _fold_resolved_links_into_groups(conn)
     conn.commit()

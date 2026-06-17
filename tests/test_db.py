@@ -174,3 +174,44 @@ def test_migrate_adds_and_backfills_audit_uuid():
         assert len(set(uuids)) == 2
     finally:
         conn.close()
+
+
+def test_migrate_backfills_uuid_after_interrupted_add():
+    """migrate() backfills a NULL uuid when the column already exists.
+
+    Simulates a crash between ``ALTER TABLE ADD COLUMN uuid`` (which
+    auto-commits) and the backfill: the column is present but a row's uuid is
+    still NULL. A subsequent migrate() must fill it and ensure the unique index.
+    """
+    conn = db.connect(":memory:")
+    try:
+        # Modern schema (column present), then force the interrupted state.
+        db.create_schema(conn)
+        conn.execute(
+            "INSERT INTO audit_log(ts, action, entity, entity_id, details) "
+            "VALUES(?, ?, ?, ?, ?)",
+            ("2026-06-13T00:00:00", "create", "product", 1, "a"),
+        )
+        conn.execute("UPDATE audit_log SET uuid = NULL")
+        conn.commit()
+        assert (
+            conn.execute(
+                "SELECT uuid FROM audit_log"
+            ).fetchone()["uuid"]
+            is None
+        )
+
+        db.migrate(conn)
+
+        row = conn.execute("SELECT uuid FROM audit_log").fetchone()
+        assert row["uuid"] is not None
+        assert len(row["uuid"]) == 32
+        int(row["uuid"], 16)  # all hex digits
+
+        indexes = {
+            r["name"]
+            for r in conn.execute("PRAGMA index_list(audit_log)")
+        }
+        assert "uidx_audit_log_uuid" in indexes
+    finally:
+        conn.close()
