@@ -24,6 +24,8 @@ class FakeBackend(Backend):
         photo_map: list of photo-map row dicts.
         photo_store: ``{file_id: bytes}`` standing in for Drive's blob storage.
         upload_count / download_count: call counters for assertions.
+        listed: rows returned by :meth:`list_catalog_spreadsheets`.
+        adopt_should_reject: when true, :meth:`adopt_spreadsheet` raises.
     """
 
     def __init__(self, download_dir=None):
@@ -50,13 +52,12 @@ class FakeBackend(Backend):
     def list_catalog_spreadsheets(self) -> list[dict]:
         return copy.deepcopy(self.listed)
 
-    def adopt_spreadsheet(self, spreadsheet_id):
+    def adopt_spreadsheet(self, spreadsheet_id: str) -> dict:
         if self.adopt_should_reject:
             raise errors.NotNumobelSheetError("not a NUMOBEL sheet")
         self.spreadsheet_id = spreadsheet_id
         revision = int(self.meta.get("revision", 0) or 0)
-        folder = self.meta.get("photo_folder_id") or self.photo_folder_id
-        self.photo_folder_id = folder
+        self.photo_folder_id = self.meta.get("photo_folder_id") or self.photo_folder_id
         return {
             "spreadsheet_id": self.spreadsheet_id,
             "photo_folder_id": self.photo_folder_id,
