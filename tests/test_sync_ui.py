@@ -23,6 +23,7 @@ from numobel import db  # noqa: E402
 from numobel.sync import state  # noqa: E402
 from numobel.sync.service import SyncService  # noqa: E402
 from numobel.ui.link_spreadsheet_dialog import LinkSpreadsheetDialog  # noqa: E402
+from numobel.sync.worker import STATUS_DISCONNECTED  # noqa: E402
 from numobel.ui.main_window import _ONBOARDING, _SHELL, MainWindow  # noqa: E402
 from tests.sync_fakes import FakeBackend  # noqa: E402
 
@@ -386,6 +387,8 @@ def test_link_dialog_cancel_does_nothing(app, conn, service, monkeypatch):
     try:
         window._link_spreadsheet()
         assert links == []
+        # Unlinked catalog + cancelled dialog: pill should read honest.
+        assert window._sync_status.text() == STATUS_DISCONNECTED
     finally:
         window.close()
 

@@ -454,13 +454,16 @@ class MainWindow(QMainWindow):
         self._link_dialog = dlg
         # Async: results arrive via spreadsheetsListed -> _on_spreadsheets_listed.
         self._sync.list_spreadsheets()
-        accepted = dlg.exec() == QDialog.Accepted
-        self._link_dialog = None
+        try:
+            accepted = dlg.exec() == QDialog.Accepted
+        finally:
+            self._link_dialog = None
 
         if accepted:
             self._sync.link_spreadsheet(dlg.selected_choice())
         elif not state.is_linked(self._conn):
-            # Cancelled before linking: keep the status pill honest.
+            # Fresh connect that the user cancelled: auth may have succeeded but
+            # nothing is linked yet, so the pill should read honest, not stuck.
             self._on_sync_status(STATUS_DISCONNECTED)
 
     def _link_spreadsheet(self) -> None:
