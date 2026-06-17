@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 
+from numobel.sync import errors
 from numobel.sync.backend import Backend
 
 
@@ -36,12 +37,31 @@ class FakeBackend(Backend):
         self.upload_count = 0
         self.download_count = 0
         self._id_counter = 0
+        self.listed: list[dict] = []
+        self.adopt_should_reject = False
 
     # -- spreadsheet / meta ------------------------------------------------- #
     def ensure_spreadsheet(self) -> dict:
         return {
             "spreadsheet_id": self.spreadsheet_id,
             "photo_folder_id": self.photo_folder_id,
+        }
+
+    def list_catalog_spreadsheets(self) -> list[dict]:
+        return copy.deepcopy(self.listed)
+
+    def adopt_spreadsheet(self, spreadsheet_id):
+        if self.adopt_should_reject:
+            raise errors.NotNumobelSheetError("not a NUMOBEL sheet")
+        self.spreadsheet_id = spreadsheet_id
+        revision = int(self.meta.get("revision", 0) or 0)
+        folder = self.meta.get("photo_folder_id") or self.photo_folder_id
+        self.photo_folder_id = folder
+        return {
+            "spreadsheet_id": self.spreadsheet_id,
+            "photo_folder_id": self.photo_folder_id,
+            "revision": revision,
+            "is_numobel": True,
         }
 
     def read_meta(self) -> dict:

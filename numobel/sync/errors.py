@@ -58,6 +58,10 @@ class SheetMissingError(SyncError):
     """The linked spreadsheet was deleted or is otherwise not found (404)."""
 
 
+class NotNumobelSheetError(SyncError):
+    """The selected/pasted spreadsheet isn't a NUMOBEL catalog sheet."""
+
+
 # --------------------------------------------------------------------------- #
 # HTTP status extraction (best-effort, never raises)
 # --------------------------------------------------------------------------- #

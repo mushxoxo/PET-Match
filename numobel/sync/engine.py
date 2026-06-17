@@ -110,6 +110,7 @@ def _do_push(conn, backend, new_rev: int) -> PushResult:
             "version": str(META_VERSION),
             "revision": str(new_rev),
             "last_writer_device": state.get_device_id(conn),
+            "photo_folder_id": backend.photo_folder_id or "",
             "updated_at": _now(),
         }
     )

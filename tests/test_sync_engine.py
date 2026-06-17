@@ -261,6 +261,31 @@ def test_push_pull_push_subsequent_push_proceeds():
     assert state.get_last_synced_revision(conn) == 2
 
 
+def test_push_writes_photo_folder_id_into_meta():
+    """A push records the backend's Drive photo-folder id in _meta."""
+    src = _sample_db()
+    fake = FakeBackend()
+    fake.photo_folder_id = "folderX"
+
+    engine.push(src, fake)
+
+    assert fake.meta["photo_folder_id"] == "folderX"
+
+
+def test_pull_ignores_extra_meta_keys():
+    """Pull tolerates extra meta keys (e.g. photo_folder_id) without crashing."""
+    backend = FakeBackend()
+    backend.write_all(serialize.dump_rows(_sample_db()))
+    backend.write_meta({"revision": "3", "photo_folder_id": "folderX"})
+
+    dest = db.connect(":memory:")
+    db.create_schema(dest)
+    result = engine.pull(dest, backend)
+
+    assert result.revision == 3
+    assert state.get_last_synced_revision(dest) == 3
+
+
 def test_resolve_conflict_local_uploads_real_photo(tmp_path, monkeypatch):
     """Keep-local with a real on-disk photo uploads it and lands at cloud+1."""
     images = tmp_path / "images"
