@@ -155,8 +155,8 @@ def extract_spreadsheet_id(text: str) -> str:
         match = re.search(r"/d/([a-zA-Z0-9-_]+)", text)
         if match:
             return match.group(1)
-    if re.fullmatch(r"[A-Za-z0-9-_]{20,}", text):
-        return text
+    # A bare id (or anything unrecognized) passes through unchanged; an invalid
+    # id lets the API surface a clear error.
     return text
 
 

@@ -165,6 +165,11 @@ def test_extract_spreadsheet_id_from_full_url():
     assert gb.extract_spreadsheet_id(url) == "1AbC_-xyz0123456789"
 
 
+def test_extract_spreadsheet_id_from_url_with_query_string():
+    url = "https://docs.google.com/spreadsheets/d/1AbC_-xyz0123456789/edit?usp=sharing"
+    assert gb.extract_spreadsheet_id(url) == "1AbC_-xyz0123456789"
+
+
 def test_extract_spreadsheet_id_passes_through_bare_id():
     bare = "1AbCdEfGhIjKlMnOpQrStUv"  # 23 chars, id-looking
     assert len(bare) >= 20
