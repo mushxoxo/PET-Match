@@ -214,6 +214,10 @@ class SyncWorker(QObject):
             arg = (spreadsheet_id_or_empty or "").strip()
             backend = self._backend_factory(conn)
 
+            # The step-by-step persistence (ids -> set_linked(True) -> push/pull)
+            # is deliberately NOT rolled back on a later failure: is_linked requires
+            # BOTH the flag and a real spreadsheet id, the watermark is never advanced
+            # on failure, and the start-up sync reconciles a half-seeded link next run.
             if arg == "":
                 ids = backend.ensure_spreadsheet()
                 state.set_spreadsheet_id(conn, ids["spreadsheet_id"])
