@@ -89,9 +89,11 @@ def _last_status(events):
 
 
 # --------------------------------------------------------------------------- #
-# connect
+# connect (auth only — linking a spreadsheet is a separate step)
 # --------------------------------------------------------------------------- #
-def test_connect_seeds_empty_sheet(app, tmp_path):
+def test_connect_unlinked_emits_needs_spreadsheet(app, tmp_path):
+    """Unlinked connect authenticates only: stores the token, then asks the UI to
+    pick a spreadsheet. It must NOT ensure/seed/adopt or mark the db linked."""
     db_path = tmp_path / "numobel.db"
     _seed_db(db_path)
     fake = FakeBackend()
@@ -101,25 +103,73 @@ def test_connect_seeds_empty_sheet(app, tmp_path):
         authorizer=lambda cid, csec: '{"token": "fake"}',
     )
     events = _capture(w)
+    needs = []
+    w.needsSpreadsheet.connect(lambda: needs.append(1))
 
     w.requestConnect("client-id", "client-secret")
     QApplication.processEvents()
 
-    pushes = [e for e in events if e[0] == "push"]
-    assert pushes and pushes[-1][1] == 1  # revision 1
-    assert "online" in _kinds(events)
-    assert _last_status(events) == worker.STATUS_SYNCED
+    assert needs == [1]  # UI asked to pick a spreadsheet
+    assert "push" not in _kinds(events)
+    assert "pull" not in _kinds(events)
+    assert worker.STATUS_SYNCED not in [e[1] for e in events if e[0] == "status"]
     assert "error" not in _kinds(events)
 
     conn = w._conn()
-    assert state.is_linked(conn) is True
-    assert state.get_spreadsheet_id(conn) == fake.spreadsheet_id
-    assert state.get_photo_folder_id(conn) == fake.photo_folder_id
-    assert state.get_token_json(conn) == '{"token": "fake"}'
+    assert state.is_linked(conn) is False  # link is a separate step
+    assert state.get_token_json(conn) == '{"token": "fake"}'  # token IS stored
+
+
+def test_connect_already_linked_reconnect_syncs(app, tmp_path):
+    """Backward-compat: reconnecting an already-linked catalog seeds-or-adopts by
+    revision (pull when cloud is ahead, push when it's empty)."""
+    # Cloud ahead -> pull on reconnect.
+    db_path = tmp_path / "numobel.db"
+    _seed_db(db_path)
+    _link_db(db_path)
+    pull_fake = FakeBackend()
+    pull_fake.meta = {"revision": "4"}
+    w = worker.SyncWorker(
+        str(db_path),
+        backend_factory=lambda conn: pull_fake,
+        authorizer=lambda cid, csec: '{"token": "fake"}',
+    )
+    events = _capture(w)
+    needs = []
+    w.needsSpreadsheet.connect(lambda: needs.append(1))
+
+    w.requestConnect("id", "sec")
+    QApplication.processEvents()
+
+    assert needs == []  # already linked: no UI prompt
+    pulls = [e for e in events if e[0] == "pull"]
+    assert pulls and pulls[-1][1]["revision"] == 4
+    assert "online" in _kinds(events)
+    assert _last_status(events) == worker.STATUS_SYNCED
+
+    # Empty cloud -> push on reconnect.
+    db_path2 = tmp_path / "numobel2.db"
+    _seed_db(db_path2)
+    _link_db(db_path2)
+    push_fake = FakeBackend()  # revision 0
+    w2 = worker.SyncWorker(
+        str(db_path2),
+        backend_factory=lambda conn: push_fake,
+        authorizer=lambda cid, csec: '{"token": "fake"}',
+    )
+    events2 = _capture(w2)
+
+    w2.requestConnect("id", "sec")
+    QApplication.processEvents()
+
+    pushes = [e for e in events2 if e[0] == "push"]
+    assert pushes and pushes[-1][1] == 1
+    assert _last_status(events2) == worker.STATUS_SYNCED
 
 
 def test_connect_uses_bundled_client_when_creds_blank(app, tmp_path, monkeypatch):
-    """Blank creds → resolve the bundled client; don't persist its secret."""
+    """Blank creds → resolve the bundled client; don't persist its secret. The
+    auth half runs (token stored), then the UI is asked to pick a spreadsheet."""
     db_path = tmp_path / "numobel.db"
     _seed_db(db_path)
     fake = FakeBackend()
@@ -134,15 +184,16 @@ def test_connect_uses_bundled_client_when_creds_blank(app, tmp_path, monkeypatch
         authorizer=lambda cid, csec: seen.append((cid, csec)) or '{"token": "fake"}',
     )
     events = _capture(w)
+    needs = []
+    w.needsSpreadsheet.connect(lambda: needs.append(1))
 
     w.requestConnect("", "")  # the UI's bundled path emits empty creds
     QApplication.processEvents()
 
     assert seen == [("bundled-id", "bundled-secret")]  # bundled creds were used
-    assert [e for e in events if e[0] == "push"]
-    assert _last_status(events) == worker.STATUS_SYNCED
+    assert needs == [1]  # then asks the UI to pick a spreadsheet
     conn = w._conn()
-    assert state.is_linked(conn) is True
+    assert state.get_token_json(conn) == '{"token": "fake"}'  # token IS stored
     # The bundled secret is NOT persisted to settings (only an explicit paste is).
     assert state.get_client_id(conn) is None
     assert state.get_client_secret(conn) is None
@@ -169,20 +220,23 @@ def test_connect_no_creds_and_no_bundled_client_errors(app, tmp_path, monkeypatc
     assert _last_status(events) == worker.STATUS_ERROR
 
 
-def test_connect_adopts_populated_sheet(app, tmp_path):
-    # Build a populated sheet from a separate db.
-    other = tmp_path / "other.db"
-    _seed_db(other)
-    other_conn = db.connect(str(other))
-    fake = FakeBackend()
-    engine.push(other_conn, fake)
-    engine.push(other_conn, fake)
-    engine.push(other_conn, fake)
-    other_conn.close()
-    assert fake.meta["revision"] == "3"
+# --------------------------------------------------------------------------- #
+# requestLinkSpreadsheet (create-new OR adopt-existing)
+# --------------------------------------------------------------------------- #
+def _authed_db(path):
+    """Seed + store an OAuth token (UNLINKED): the post-connect link starting point."""
+    _seed_db(path)
+    conn = db.connect(str(path))
+    state.set_token_json(conn, '{"token": "fake"}')
+    conn.commit()
+    conn.close()
 
+
+def test_link_spreadsheet_empty_creates_and_seeds(app, tmp_path):
+    """Empty arg → create a brand-new sheet, persist ids, link, push (seed)."""
     db_path = tmp_path / "numobel.db"
-    _seed_db(db_path)
+    _authed_db(db_path)
+    fake = FakeBackend()
     w = worker.SyncWorker(
         str(db_path),
         backend_factory=lambda conn: fake,
@@ -190,7 +244,47 @@ def test_connect_adopts_populated_sheet(app, tmp_path):
     )
     events = _capture(w)
 
-    w.requestConnect("id", "sec")
+    w.requestLinkSpreadsheet("")
+    QApplication.processEvents()
+
+    pushes = [e for e in events if e[0] == "push"]
+    assert pushes and pushes[-1][1] == 1  # seeded at revision 1
+    assert "pull" not in _kinds(events)
+    assert "online" in _kinds(events)
+    assert _last_status(events) == worker.STATUS_SYNCED
+    assert "error" not in _kinds(events)
+
+    conn = w._conn()
+    assert state.is_linked(conn) is True
+    assert state.get_spreadsheet_id(conn) == fake.spreadsheet_id
+    assert state.get_photo_folder_id(conn) == fake.photo_folder_id
+
+
+def test_link_spreadsheet_id_adopts_full_sheet(app, tmp_path):
+    """Non-empty arg over a populated sheet → adopt by pulling it down."""
+    db_path = tmp_path / "numobel.db"
+    _authed_db(db_path)
+    fake = FakeBackend()
+    fake.spreadsheet_id = "sheet-abc"
+    # Populate the sheet with real data + revision via three pushes from a peer db.
+    other = tmp_path / "other.db"
+    _seed_db(other)
+    other_conn = db.connect(str(other))
+    engine.push(other_conn, fake)
+    engine.push(other_conn, fake)
+    engine.push(other_conn, fake)
+    other_conn.close()
+    assert fake.meta["revision"] == "3"
+    fake.meta["photo_folder_id"] = "folderX"  # adopt resolves the folder from meta
+
+    w = worker.SyncWorker(
+        str(db_path),
+        backend_factory=lambda conn: fake,
+        authorizer=lambda cid, csec: '{"token": "fake"}',
+    )
+    events = _capture(w)
+
+    w.requestLinkSpreadsheet("sheet-abc")
     QApplication.processEvents()
 
     pulls = [e for e in events if e[0] == "pull"]
@@ -198,11 +292,114 @@ def test_connect_adopts_populated_sheet(app, tmp_path):
     assert "push" not in _kinds(events)
     assert _last_status(events) == worker.STATUS_SYNCED
 
+    conn = w._conn()
+    assert state.is_linked(conn) is True
+    assert state.get_spreadsheet_id(conn) == "sheet-abc"
+    assert state.get_photo_folder_id(conn) == "folderX"
+
+
+def test_link_spreadsheet_id_adopts_empty_sheet_seeds(app, tmp_path):
+    """Non-empty arg over an empty (revision 0) sheet → seed by pushing."""
+    db_path = tmp_path / "numobel.db"
+    _authed_db(db_path)
+    fake = FakeBackend()  # revision 0
+    w = worker.SyncWorker(
+        str(db_path),
+        backend_factory=lambda conn: fake,
+        authorizer=lambda cid, csec: '{"token": "fake"}',
+    )
+    events = _capture(w)
+
+    w.requestLinkSpreadsheet("sheet-empty")
+    QApplication.processEvents()
+
+    pushes = [e for e in events if e[0] == "push"]
+    assert pushes and pushes[-1][1] == 1
+    assert "pull" not in _kinds(events)
+    assert _last_status(events) == worker.STATUS_SYNCED
+
+    conn = w._conn()
+    assert state.is_linked(conn) is True
+    assert state.get_spreadsheet_id(conn) == "sheet-empty"
+
+
+def test_link_spreadsheet_foreign_sheet_errors(app, tmp_path):
+    """Adopting a non-NUMOBEL sheet errors ('not_numobel') and does NOT link."""
+    db_path = tmp_path / "numobel.db"
+    _authed_db(db_path)
+    fake = FakeBackend()
+    fake.adopt_should_reject = True
+    w = worker.SyncWorker(
+        str(db_path),
+        backend_factory=lambda conn: fake,
+        authorizer=lambda cid, csec: '{"token": "fake"}',
+    )
+    events = _capture(w)
+
+    w.requestLinkSpreadsheet("foreign-sheet")
+    QApplication.processEvents()
+
+    errs = [e for e in events if e[0] == "error"]
+    assert errs and errs[-1][1] == "not_numobel"
+    assert _last_status(events) == worker.STATUS_ERROR
+    conn = w._conn()
+    assert state.is_linked(conn) is False
+
+
+# --------------------------------------------------------------------------- #
+# requestListSpreadsheets
+# --------------------------------------------------------------------------- #
+def test_list_spreadsheets_emits_results(app, tmp_path):
+    db_path = tmp_path / "numobel.db"
+    _authed_db(db_path)
+    fake = FakeBackend()
+    fake.listed = [{"id": "x", "name": "X", "modifiedTime": "t"}]
+    w = worker.SyncWorker(
+        str(db_path),
+        backend_factory=lambda conn: fake,
+        authorizer=lambda cid, csec: '{"token": "fake"}',
+    )
+    events = _capture(w)
+    listed = []
+    w.spreadsheetsListed.connect(lambda rows: listed.append(rows))
+
+    w.requestListSpreadsheets()
+    QApplication.processEvents()
+
+    assert listed == [[{"id": "x", "name": "X", "modifiedTime": "t"}]]
+    assert "status" not in _kinds(events)  # no status change on success
+    assert "error" not in _kinds(events)
+
+
+def test_list_spreadsheets_offline_routes_error(app, tmp_path):
+    db_path = tmp_path / "numobel.db"
+    _authed_db(db_path)
+
+    def offline_factory(conn):
+        raise ConnectionError("no network")
+
+    w = worker.SyncWorker(
+        str(db_path),
+        backend_factory=offline_factory,
+        authorizer=lambda cid, csec: '{"token": "fake"}',
+    )
+    events = _capture(w)
+    listed = []
+    w.spreadsheetsListed.connect(lambda rows: listed.append(rows))
+
+    w.requestListSpreadsheets()
+    QApplication.processEvents()
+
+    assert listed == []
+    assert "offline" in _kinds(events)
+    assert _last_status(events) == worker.STATUS_OFFLINE
+
 
 # --------------------------------------------------------------------------- #
 # push
 # --------------------------------------------------------------------------- #
 def _connected_worker(tmp_path, fake):
+    """Connect + link a fresh catalog (seeds the sheet at revision 1)."""
     db_path = tmp_path / "numobel.db"
     _seed_db(db_path)
     w = worker.SyncWorker(
@@ -210,7 +407,9 @@ def _connected_worker(tmp_path, fake):
         backend_factory=lambda conn: fake,
         authorizer=lambda cid, csec: '{"token": "fake"}',
     )
-    w.requestConnect("id", "sec")
+    w.requestConnect("id", "sec")  # auth only
+    QApplication.processEvents()
+    w.requestLinkSpreadsheet("")  # create-new + seed -> linked at revision 1
     QApplication.processEvents()
     return w
 

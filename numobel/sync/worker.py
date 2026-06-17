@@ -91,6 +91,12 @@ class SyncWorker(QObject):
     errored = Signal(str, str)
     offline = Signal()
     online = Signal()
+    #: Auth succeeded on a fresh (unlinked) connect: the UI must now drive the
+    #: user's choice of which spreadsheet to link (create-new or adopt-existing).
+    needsSpreadsheet = Signal()
+    #: Carries the rows from :meth:`backend.list_catalog_spreadsheets` so the UI
+    #: can offer existing NUMOBEL sheets to adopt.
+    spreadsheetsListed = Signal(list)
 
     def __init__(self, db_path, backend_factory=None, authorizer=None, parent=None):
         super().__init__(parent)
@@ -134,11 +140,17 @@ class SyncWorker(QObject):
     # ----------------------------------------------------------------- #
     @Slot(str, str)
     def requestConnect(self, client_id: str, client_secret: str) -> None:
-        """Authenticate, ensure the spreadsheet, then seed-or-adopt the sheet.
+        """Authenticate (only). On a fresh connect, then ask the UI to link a sheet.
 
         Blank ``client_id``/``client_secret`` mean "use the bundled OAuth client"
         (the common path — the user just clicks Connect). Only an explicit paste
         is persisted to settings; the bundled secret is never stored in the DB.
+
+        Connect is now decoupled from spreadsheet selection: a fresh (unlinked)
+        connect does the OAuth half and then emits :attr:`needsSpreadsheet`, so
+        the UI can drive the create-new / adopt-existing choice via
+        :meth:`requestLinkSpreadsheet`. An already-linked catalog reconnecting
+        keeps the legacy seed-or-adopt-by-revision behaviour (backward compat).
         """
         self.statusChanged.emit(STATUS_CONNECTING)
         try:
@@ -160,33 +172,84 @@ class SyncWorker(QObject):
             token = self._authorizer(client_id, client_secret)
             state.set_token_json(conn, token)
 
-            backend = self._backend_factory(conn)
-            ids = backend.ensure_spreadsheet()
-            state.set_spreadsheet_id(conn, ids["spreadsheet_id"])
-            state.set_photo_folder_id(conn, ids["photo_folder_id"])
-            state.set_linked(conn, True)
-
-            # NOTE: this step-by-step persistence (creds → token → ids →
-            # set_linked(True) → seed/adopt) is deliberately NOT rolled back if a
-            # later step fails. is_linked requires BOTH the flag and a real
-            # spreadsheet id, the watermark is never advanced on failure, and the
-            # M6 pull-on-start path reconciles a half-seeded link on the next run.
-
-            # Seed-or-adopt: a sheet that already carries data (revision > 0) is
-            # adopted by pulling it down; an empty sheet is seeded with our local
-            # catalog by pushing.
-            cloud_rev = int(backend.read_meta().get("revision", 0) or 0)
-            if cloud_rev > 0:
-                r = engine.pull(conn, backend)
-                self.pullFinished.emit(
-                    {"revision": r.revision, "tables": r.tables, "photos": r.photos}
-                )
+            if state.is_linked(conn):
+                # Backward-compat reconnect: both ids are already persisted, so
+                # ensure_spreadsheet returns them; seed-or-adopt by revision (pull
+                # a populated sheet, push an empty one to seed it).
+                backend = self._backend_factory(conn)
+                ids = backend.ensure_spreadsheet()
+                state.set_spreadsheet_id(conn, ids["spreadsheet_id"])
+                state.set_photo_folder_id(conn, ids["photo_folder_id"])
+                cloud_rev = int(backend.read_meta().get("revision", 0) or 0)
+                if cloud_rev > 0:
+                    r = engine.pull(conn, backend)
+                    self.pullFinished.emit(
+                        {"revision": r.revision, "tables": r.tables, "photos": r.photos}
+                    )
+                else:
+                    r = engine.push(conn, backend)
+                    self.pushFinished.emit(r.revision)
+                self.online.emit()
+                self.statusChanged.emit(STATUS_SYNCED)
             else:
+                # Fresh connect: auth is done, but the user still has to choose a
+                # spreadsheet. Hand off to the UI; status stays Connecting.
+                self.needsSpreadsheet.emit()
+                return
+        except Exception as exc:  # noqa: BLE001 - slot must never raise
+            self._handle_error(exc)
+
+    @Slot(str)
+    def requestLinkSpreadsheet(self, spreadsheet_id_or_empty: str) -> None:
+        """Link the authenticated catalog to a spreadsheet, then sync.
+
+        An empty arg creates a brand-new spreadsheet and seeds it with the local
+        catalog (push). A non-empty arg adopts an existing sheet: it is pulled
+        down when it already carries data (revision > 0) or seeded by pushing
+        when it is empty. The arg may be a raw id OR a full Sheets URL — the
+        id is extracted before adoption.
+        """
+        try:
+            conn = self._conn()
+            arg = (spreadsheet_id_or_empty or "").strip()
+            backend = self._backend_factory(conn)
+
+            if arg == "":
+                ids = backend.ensure_spreadsheet()
+                state.set_spreadsheet_id(conn, ids["spreadsheet_id"])
+                state.set_photo_folder_id(conn, ids["photo_folder_id"])
+                state.set_linked(conn, True)
                 r = engine.push(conn, backend)
                 self.pushFinished.emit(r.revision)
+            else:
+                from numobel.sync.google_backend import extract_spreadsheet_id
+
+                arg = extract_spreadsheet_id(arg)
+                info = backend.adopt_spreadsheet(arg)
+                state.set_spreadsheet_id(conn, info["spreadsheet_id"])
+                state.set_photo_folder_id(conn, info["photo_folder_id"])
+                state.set_linked(conn, True)
+                if info["revision"] > 0:
+                    r = engine.pull(conn, backend)
+                    self.pullFinished.emit(
+                        {"revision": r.revision, "tables": r.tables, "photos": r.photos}
+                    )
+                else:
+                    r = engine.push(conn, backend)
+                    self.pushFinished.emit(r.revision)
 
             self.online.emit()
             self.statusChanged.emit(STATUS_SYNCED)
+        except Exception as exc:  # noqa: BLE001 - slot must never raise
+            self._handle_error(exc)
+
+    @Slot()
+    def requestListSpreadsheets(self) -> None:
+        """List adoptable NUMOBEL spreadsheets for the UI (no status change)."""
+        try:
+            conn = self._conn()
+            backend = self._backend_factory(conn)
+            self.spreadsheetsListed.emit(backend.list_catalog_spreadsheets())
         except Exception as exc:  # noqa: BLE001 - slot must never raise
             self._handle_error(exc)
 
@@ -286,6 +349,9 @@ class SyncWorker(QObject):
             self.statusChanged.emit(STATUS_ERROR)
         elif isinstance(exc, errors.SheetMissingError):
             self.errored.emit("sheet_missing", str(exc))
+            self.statusChanged.emit(STATUS_ERROR)
+        elif isinstance(exc, errors.NotNumobelSheetError):
+            self.errored.emit("not_numobel", str(exc))
             self.statusChanged.emit(STATUS_ERROR)
         elif errors.is_offline_error(exc):
             self.offline.emit()

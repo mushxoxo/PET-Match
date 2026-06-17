@@ -43,6 +43,10 @@ class SyncService(QObject):
     errored = Signal(str, str)
     #: Emitted EXACTLY ONCE per offline episode; re-armed after going online.
     offlineNotice = Signal()
+    #: Auth succeeded on a fresh connect: the UI must drive spreadsheet selection.
+    needsSpreadsheet = Signal()
+    #: Carries adoptable NUMOBEL spreadsheet rows for the UI to offer.
+    spreadsheetsListed = Signal(list)
 
     # -- Internal request signals (queued, cross-thread, -> worker slots) --- #
     _connectRequested = Signal(str, str)
@@ -50,6 +54,8 @@ class SyncService(QObject):
     _pullRequested = Signal()
     _resolveRequested = Signal(str)
     _disconnectRequested = Signal()
+    _linkRequested = Signal(str)
+    _listRequested = Signal()
 
     def __init__(
         self,
@@ -82,6 +88,12 @@ class SyncService(QObject):
         self._disconnectRequested.connect(
             self._worker.requestDisconnect, Qt.QueuedConnection
         )
+        self._linkRequested.connect(
+            self._worker.requestLinkSpreadsheet, Qt.QueuedConnection
+        )
+        self._listRequested.connect(
+            self._worker.requestListSpreadsheets, Qt.QueuedConnection
+        )
 
         # Worker signals -> public relays / FSM handlers.
         self._worker.statusChanged.connect(self.statusChanged)
@@ -92,6 +104,8 @@ class SyncService(QObject):
         self._worker.pushFinished.connect(self._on_push_finished)
         self._worker.offline.connect(self._on_offline)
         self._worker.online.connect(self._on_online)
+        self._worker.needsSpreadsheet.connect(self.needsSpreadsheet)
+        self._worker.spreadsheetsListed.connect(self.spreadsheetsListed)
 
         # Timers live on the creating (UI) thread; owned by the service.
         self._debounce = QTimer(self)
@@ -127,6 +141,18 @@ class SyncService(QObject):
         id/secret only for the manual (advanced) fallback path.
         """
         self._connectRequested.emit(client_id, client_secret)
+
+    def link_spreadsheet(self, spreadsheet_id_or_empty=""):
+        """Link the authenticated catalog to a spreadsheet (on the worker).
+
+        Pass an empty string to create a brand-new sheet; pass an id or full
+        Sheets URL to adopt an existing NUMOBEL spreadsheet.
+        """
+        self._linkRequested.emit(spreadsheet_id_or_empty)
+
+    def list_spreadsheets(self):
+        """Request the list of adoptable NUMOBEL spreadsheets (on the worker)."""
+        self._listRequested.emit()
 
     def pull(self):
         """Pull the cloud catalog down (on the worker)."""
@@ -202,6 +228,8 @@ class SyncService(QObject):
             (self._worker.pushFinished, self._on_push_finished),
             (self._worker.offline, self._on_offline),
             (self._worker.online, self._on_online),
+            (self._worker.needsSpreadsheet, self.needsSpreadsheet),
+            (self._worker.spreadsheetsListed, self.spreadsheetsListed),
         )
         for signal, slot in relays:
             try:

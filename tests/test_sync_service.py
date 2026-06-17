@@ -223,9 +223,61 @@ def test_shutdown_unregisters_listener_and_idempotent(app, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# link / list public methods reach the worker slots (start=False)
+# --------------------------------------------------------------------------- #
+def test_link_and_list_methods_emit_internal_requests(app, tmp_path):
+    db_path = tmp_path / "numobel.db"
+    _seed_db(db_path)
+    svc = SyncService(str(db_path), start=False)
+    try:
+        links = []
+        lists = []
+        svc._linkRequested.connect(lambda s: links.append(s))
+        svc._listRequested.connect(lambda: lists.append(1))
+
+        svc.link_spreadsheet("sheet-abc")
+        svc.link_spreadsheet()  # default: create-new
+        svc.list_spreadsheets()
+
+        assert links == ["sheet-abc", ""]
+        assert lists == [1]
+    finally:
+        svc.shutdown()
+
+
+# --------------------------------------------------------------------------- #
+# worker -> service relays (needsSpreadsheet / spreadsheetsListed)
+# --------------------------------------------------------------------------- #
+def test_needs_and_listed_relayed_then_severed_on_shutdown(app, tmp_path):
+    db_path = tmp_path / "numobel.db"
+    _seed_db(db_path)
+    svc = SyncService(str(db_path), start=False)
+    needs = []
+    listed = []
+    svc.needsSpreadsheet.connect(lambda: needs.append(1))
+    svc.spreadsheetsListed.connect(lambda rows: listed.append(rows))
+
+    # Relayed while live.
+    svc._worker.needsSpreadsheet.emit()
+    svc._worker.spreadsheetsListed.emit([{"id": "x"}])
+    QApplication.processEvents()
+    assert needs == [1]
+    assert listed == [[{"id": "x"}]]
+
+    # After shutdown, the relays are severed: further worker emissions do not
+    # reach the service's public signals.
+    svc.shutdown()
+    svc._worker.needsSpreadsheet.emit()
+    svc._worker.spreadsheetsListed.emit([{"id": "y"}])
+    QApplication.processEvents()
+    assert needs == [1]
+    assert listed == [[{"id": "x"}]]
+
+
+# --------------------------------------------------------------------------- #
 # thread integration (start=True)
 # --------------------------------------------------------------------------- #
-def test_thread_integration_connect_relays(app, tmp_path):
+def test_thread_integration_connect_then_link_relays(app, tmp_path):
     db_path = tmp_path / "numobel.db"
     _seed_db(db_path)
     fake = FakeBackend()
@@ -236,19 +288,29 @@ def test_thread_integration_connect_relays(app, tmp_path):
         start=True,
     )
     try:
+        needs = []
         done = []
+        svc.needsSpreadsheet.connect(lambda: needs.append(1))
         svc.pushFinished.connect(lambda r: done.append(("push", r)))
         svc.pullFinished.connect(lambda d: done.append(("pull", d)))
 
+        # Fresh connect: auth only, then the worker asks the UI to pick a sheet.
         svc.connect("client-id", "client-secret")
-
         for _ in range(40):  # up to ~2s
+            if needs:
+                break
+            QTest.qWait(50)
+            QApplication.processEvents()
+        assert needs, "expected needsSpreadsheet to be relayed"
+
+        # UI drives the link (create-new): seeds + links.
+        svc.link_spreadsheet("")
+        for _ in range(40):
             if done:
                 break
             QTest.qWait(50)
             QApplication.processEvents()
-
-        assert done, "expected a push/pull to be relayed"
+        assert done, "expected a push/pull after linking"
 
         conn = db.connect(str(db_path))
         assert state.is_linked(conn) is True
