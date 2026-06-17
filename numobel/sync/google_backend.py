@@ -34,11 +34,13 @@ from numobel.sync.serialize import SNAPSHOT_TABLES
 DATA_TAB = "_data"
 META_TAB = "_meta"
 PHOTOS_TAB = "_photos"
+AUDIT_TAB = "_audit"
 
 #: JSON chunk size — under Sheets' 50k char/cell cap (mirrors the exporter).
 _CHUNK = 32000
 
 _PHOTO_MAP_COLUMNS = ["product_id", "drive_file_id", "filename", "checksum"]
+_AUDIT_COLUMNS = ["uuid", "ts", "action", "entity", "entity_id", "details"]
 
 
 # --------------------------------------------------------------------------- #
@@ -128,6 +130,44 @@ def rows_to_photo_map(rows: list[list]) -> list[dict]:
     return out
 
 
+def audit_to_rows(rows: list[dict]) -> list[list]:
+    """Encode audit-log row dicts as a header + one row per entry."""
+    out: list[list] = [list(_AUDIT_COLUMNS)]
+    for entry in rows:
+        out.append([entry.get(col, "") for col in _AUDIT_COLUMNS])
+    return out
+
+
+def rows_to_audit(rows: list[list]) -> list[dict]:
+    """Inverse of :func:`audit_to_rows`.
+
+    Skips the header. Rows with a blank/``None`` ``uuid`` are dropped (uuid is
+    the cross-device identity). ``entity_id`` is coerced to ``int`` when
+    parseable, else ``None`` (it is legitimately nullable — a bad value does NOT
+    drop the row). The remaining columns are kept as ``str`` (``None`` → ``""``).
+    """
+    if not rows or len(rows) < 2:
+        return []
+    out: list[dict] = []
+    for row in rows[1:]:
+        if not row:
+            continue
+        entry = {}
+        for idx, col in enumerate(_AUDIT_COLUMNS):
+            entry[col] = row[idx] if idx < len(row) else ""
+        uuid = entry["uuid"]
+        if uuid is None or str(uuid) == "":
+            continue
+        try:
+            entry["entity_id"] = int(entry["entity_id"])
+        except (TypeError, ValueError):
+            entry["entity_id"] = None
+        for col in ("uuid", "ts", "action", "entity", "details"):
+            entry[col] = str(entry[col]) if entry[col] is not None else ""
+        out.append(entry)
+    return out
+
+
 def readable_table_rows(data: dict, table: str) -> list[list]:
     """``[columns] + rows`` for ``table`` from the dump_rows shape (header first).
 
@@ -211,6 +251,7 @@ class GoogleBackend(Backend):
         self.photo_folder_id = photo_folder_id
         self._sheets = None
         self._drive = None
+        self._audit_tab_ready = False
 
     # -- service construction ---------------------------------------------- #
     def _services(self):
@@ -301,12 +342,12 @@ class GoogleBackend(Backend):
         Single source of truth shared by :meth:`ensure_spreadsheet` (create body)
         and :meth:`_add_missing_tabs` (batchUpdate addSheet). Visible
         :data:`SNAPSHOT_TABLES` first, then the hidden ``_data``/``_meta``/
-        ``_photos`` bookkeeping tabs.
+        ``_photos``/``_audit`` bookkeeping tabs.
         """
         specs: list[dict] = []
         for table in SNAPSHOT_TABLES:
             specs.append({"properties": {"title": table}})
-        for hidden in (DATA_TAB, META_TAB, PHOTOS_TAB):
+        for hidden in (DATA_TAB, META_TAB, PHOTOS_TAB, AUDIT_TAB):
             specs.append({"properties": {"title": hidden, "hidden": True}})
         return specs
 
@@ -348,6 +389,30 @@ class GoogleBackend(Backend):
                 body={"requests": requests},
             )
         )
+
+    def _ensure_audit_tab(self) -> None:
+        """Ensure the hidden ``_audit`` tab exists (older sheets predate it).
+
+        Cached per backend instance so it costs at most one metadata read (plus a
+        one-time addSheet) per sync session.
+        """
+        if getattr(self, "_audit_tab_ready", False):
+            return
+        sheets, _ = self._services()
+        info = self._execute(
+            sheets.spreadsheets().get(
+                spreadsheetId=self.spreadsheet_id, fields="sheets.properties.title"
+            )
+        )
+        titles = {s["properties"]["title"] for s in info.get("sheets", [])}
+        if AUDIT_TAB not in titles:
+            self._execute(
+                sheets.spreadsheets().batchUpdate(
+                    spreadsheetId=self.spreadsheet_id,
+                    body={"requests": [{"addSheet": {"properties": {"title": AUDIT_TAB, "hidden": True}}}]},
+                )
+            )
+        self._audit_tab_ready = True
 
     # -- discovery / adoption ---------------------------------------------- #
     def list_catalog_spreadsheets(self) -> list[dict]:
@@ -407,6 +472,10 @@ class GoogleBackend(Backend):
             revision = 0
             meta: dict = {}
         else:  # numobel
+            # Re-linking an older NUMOBEL sheet (created before later hidden
+            # tabs existed) upgrades it; _add_missing_tabs is a no-op when all
+            # required tabs are already present.
+            self._add_missing_tabs(titles)
             meta = self.read_meta()
             revision = int(meta.get("revision", 0) or 0)
 
@@ -490,6 +559,15 @@ class GoogleBackend(Backend):
 
     def write_photo_map(self, rows: list[dict]) -> None:
         self._write_values(PHOTOS_TAB, "A:D", photo_map_to_rows(rows))
+
+    # -- audit log --------------------------------------------------------- #
+    def read_audit_log(self) -> list[dict]:
+        self._ensure_audit_tab()
+        return rows_to_audit(self._read_values(AUDIT_TAB, "A:F"))
+
+    def write_audit_log(self, rows: list[dict]) -> None:
+        self._ensure_audit_tab()
+        self._write_values(AUDIT_TAB, "A:F", audit_to_rows(rows))
 
     # -- photo blobs ------------------------------------------------------- #
     def upload_photo(self, local_path: str, filename: str) -> str:

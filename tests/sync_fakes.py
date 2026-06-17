@@ -22,6 +22,7 @@ class FakeBackend(Backend):
         meta: the ``_meta`` ``{key: value}`` dict.
         data: the catalog in :func:`serialize.dump_rows` shape (or ``{}``).
         photo_map: list of photo-map row dicts.
+        audit_log: list of audit-log row dicts (the ``_audit`` tab).
         photo_store: ``{file_id: bytes}`` standing in for Drive's blob storage.
         upload_count / download_count: call counters for assertions.
         listed: rows returned by :meth:`list_catalog_spreadsheets`.
@@ -34,6 +35,7 @@ class FakeBackend(Backend):
         self.meta: dict = {}
         self.data: dict = {}
         self.photo_map: list[dict] = []
+        self.audit_log: list[dict] = []
         self.photo_store: dict[str, bytes] = {}
         self.download_dir = Path(download_dir) if download_dir else None
         self.upload_count = 0
@@ -84,6 +86,13 @@ class FakeBackend(Backend):
 
     def write_photo_map(self, rows: list[dict]) -> None:
         self.photo_map = copy.deepcopy(rows)
+
+    # -- audit log ---------------------------------------------------------- #
+    def read_audit_log(self) -> list[dict]:
+        return copy.deepcopy(self.audit_log)
+
+    def write_audit_log(self, rows: list[dict]) -> None:
+        self.audit_log = copy.deepcopy(rows)
 
     # -- photo blobs -------------------------------------------------------- #
     def upload_photo(self, local_path: str, filename: str) -> str:

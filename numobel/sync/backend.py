@@ -23,6 +23,8 @@ Data model the methods agree on:
   schema version, …) as strings.
 * Photos live in a Drive folder; a ``_photo_map`` tab records, per product, the
   Drive file id + filename + checksum so devices can diff without re-downloading.
+* An ``_audit`` tab holds the append-only audit log, unioned across devices by
+  ``uuid`` (the device-local autoincrement ``id`` is deliberately not synced).
 """
 
 from __future__ import annotations
@@ -104,6 +106,22 @@ class Backend(abc.ABC):
     @abc.abstractmethod
     def write_photo_map(self, rows: list[dict]) -> None:
         """Overwrite the photo map with ``rows`` (same shape as the reader)."""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def read_audit_log(self) -> list[dict]:
+        """Return the merged audit-log rows from the hidden ``_audit`` tab.
+
+        Each row is ``{"uuid": str, "ts": str, "action": str, "entity": str,
+        "entity_id": int|None, "details": str}``. Returns an empty list when no
+        audit entries are tracked. The append-only audit log is UNIONED across
+        devices (by ``uuid``), unlike the full-replace catalog.
+        """
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def write_audit_log(self, rows: list[dict]) -> None:
+        """Overwrite the ``_audit`` tab with ``rows`` (same shape as the reader)."""
         raise NotImplementedError
 
     @abc.abstractmethod

@@ -142,6 +142,46 @@ def test_photo_map_empty():
 
 
 # --------------------------------------------------------------------------- #
+# audit log round-trip
+# --------------------------------------------------------------------------- #
+def test_audit_roundtrip_preserves_none_and_empty_details():
+    entries = [
+        {"uuid": "u1", "ts": "2026-01-01T00:00:00", "action": "create",
+         "entity": "product", "entity_id": 100, "details": "made it"},
+        {"uuid": "u2", "ts": "2026-01-02T00:00:00", "action": "delete",
+         "entity": "brand", "entity_id": None, "details": ""},
+    ]
+    rows = gb.audit_to_rows(entries)
+    assert rows[0] == gb._AUDIT_COLUMNS
+
+    back = gb.rows_to_audit(rows)
+    assert back == entries
+    assert back[0]["entity_id"] == 100
+    assert isinstance(back[0]["entity_id"], int)
+    assert back[1]["entity_id"] is None
+    assert back[1]["details"] == ""
+
+
+def test_audit_empty_and_header_only():
+    assert gb.rows_to_audit([]) == []
+    assert gb.rows_to_audit([gb._AUDIT_COLUMNS]) == []
+    assert gb.rows_to_audit(gb.audit_to_rows([])) == []
+
+
+def test_audit_drops_blank_uuid_keeps_nonint_entity_id():
+    rows = [
+        gb._AUDIT_COLUMNS,
+        ["", "2026-01-01T00:00:00", "create", "product", "5", "x"],  # blank uuid -> dropped
+        ["u9", "2026-01-03T00:00:00", "update", "price", "", "kept"],  # blank entity_id -> None, KEPT
+    ]
+    back = gb.rows_to_audit(rows)
+    assert back == [
+        {"uuid": "u9", "ts": "2026-01-03T00:00:00", "action": "update",
+         "entity": "price", "entity_id": None, "details": "kept"}
+    ]
+
+
+# --------------------------------------------------------------------------- #
 # readable per-table rows
 # --------------------------------------------------------------------------- #
 def test_readable_table_rows_header_then_data():
