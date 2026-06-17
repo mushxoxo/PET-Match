@@ -230,6 +230,10 @@ def test_onboarding_google_not_linked_collects_credentials(
     app, conn, service, monkeypatch
 ):
     called = []
+    # Force the manual-paste fallback (no bundled client) for this test.
+    monkeypatch.setattr(
+        "numobel.sync.oauth_client.has_bundled_client", lambda: False
+    )
     monkeypatch.setattr(
         MainWindow,
         "_collect_google_credentials",
@@ -263,6 +267,9 @@ def test_onboarding_google_linked_pulls(app, conn, service, monkeypatch):
 # --------------------------------------------------------------------------- #
 def test_connect_uses_collected_credentials(app, conn, service, monkeypatch):
     connects = []
+    monkeypatch.setattr(
+        "numobel.sync.oauth_client.has_bundled_client", lambda: False
+    )
     monkeypatch.setattr(service, "connect", lambda i, s: connects.append((i, s)))
     monkeypatch.setattr(
         MainWindow, "_collect_google_credentials", lambda self: ("id-1", "secret-1")
@@ -277,6 +284,9 @@ def test_connect_uses_collected_credentials(app, conn, service, monkeypatch):
 
 def test_connect_cancel_does_nothing(app, conn, service, monkeypatch):
     connects = []
+    monkeypatch.setattr(
+        "numobel.sync.oauth_client.has_bundled_client", lambda: False
+    )
     monkeypatch.setattr(service, "connect", lambda i, s: connects.append((i, s)))
     monkeypatch.setattr(
         MainWindow, "_collect_google_credentials", lambda self: None
@@ -285,6 +295,38 @@ def test_connect_cancel_does_nothing(app, conn, service, monkeypatch):
     try:
         window._connect_google()
         assert connects == []
+    finally:
+        window.close()
+
+
+def test_connect_uses_bundled_client_without_dialog(app, conn, service, monkeypatch):
+    """With a bundled client, Connect opens the browser with NO blocking dialog."""
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(
+        "numobel.sync.oauth_client.has_bundled_client", lambda: True
+    )
+    infos = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: infos.append(a))
+
+    collected = []
+    monkeypatch.setattr(
+        MainWindow,
+        "_collect_google_credentials",
+        lambda self: collected.append(True) or ("x", "y"),
+    )
+    connects = []
+    monkeypatch.setattr(
+        service, "connect", lambda *a: connects.append(a)
+    )
+    window = MainWindow(conn, sync_service=service)
+    try:
+        window._connect_google()
+        # No paste dialog, NO blocking info box, and connect() fired immediately
+        # with no creds (the worker resolves the bundled client).
+        assert collected == []
+        assert infos == []
+        assert connects == [()]
     finally:
         window.close()
 

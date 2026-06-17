@@ -1,10 +1,11 @@
 """OAuth 2.0 installed-app (loopback) flow for the Google Sheets sync.
 
-The user supplies their own OAuth *Desktop app* client id + secret (created in
-the Google Cloud console); NUMOBEL never ships a ``client_secrets.json``. From
-those two strings we synthesize the installed-app client config dict that
-``google_auth_oauthlib`` expects, run the loopback consent flow once, and from
-then on persist (and silently refresh) the resulting token JSON.
+The OAuth *Desktop app* client id + secret come from the bundled client
+(:mod:`numobel.sync.oauth_client`) by default, or — as a fallback — from values
+the user pastes into the Connect dialog. From those two strings we synthesize
+the installed-app client config dict that ``google_auth_oauthlib`` expects, run
+the loopback consent flow once (the browser opens, the user picks an account and
+authorizes), and from then on persist (and silently refresh) the token JSON.
 
 All ``google`` / ``google_auth_oauthlib`` imports are done LAZILY inside the
 functions that need them, so this module — and the pure :func:`build_client_config`
@@ -18,10 +19,16 @@ import json
 
 from numobel.sync import errors
 
-#: Minimal scopes: per-file Drive access (only files we create) + full Sheets.
+#: Single scope: per-file Drive access (only files this app creates). This one
+#: scope also authorizes the Sheets API on our app-created spreadsheet, so we do
+#: NOT request the broader ``.../spreadsheets`` scope. ``drive.file`` is
+#: *non-sensitive*, which means no Google verification review, no "unverified
+#: app" warning, and no 7-day refresh-token expiry — the user just authorizes.
+#:
+#: NOTE: a token previously granted for both drive.file + spreadsheets still
+#: works (it's a superset); a fresh consent now requests only drive.file.
 SCOPES = [
     "https://www.googleapis.com/auth/drive.file",
-    "https://www.googleapis.com/auth/spreadsheets",
 ]
 
 

@@ -118,6 +118,57 @@ def test_connect_seeds_empty_sheet(app, tmp_path):
     assert state.get_token_json(conn) == '{"token": "fake"}'
 
 
+def test_connect_uses_bundled_client_when_creds_blank(app, tmp_path, monkeypatch):
+    """Blank creds → resolve the bundled client; don't persist its secret."""
+    db_path = tmp_path / "numobel.db"
+    _seed_db(db_path)
+    fake = FakeBackend()
+    monkeypatch.setattr(
+        worker.oauth_client, "get_bundled_client",
+        lambda: ("bundled-id", "bundled-secret"),
+    )
+    seen = []
+    w = worker.SyncWorker(
+        str(db_path),
+        backend_factory=lambda conn: fake,
+        authorizer=lambda cid, csec: seen.append((cid, csec)) or '{"token": "fake"}',
+    )
+    events = _capture(w)
+
+    w.requestConnect("", "")  # the UI's bundled path emits empty creds
+    QApplication.processEvents()
+
+    assert seen == [("bundled-id", "bundled-secret")]  # bundled creds were used
+    assert [e for e in events if e[0] == "push"]
+    assert _last_status(events) == worker.STATUS_SYNCED
+    conn = w._conn()
+    assert state.is_linked(conn) is True
+    # The bundled secret is NOT persisted to settings (only an explicit paste is).
+    assert state.get_client_id(conn) is None
+    assert state.get_client_secret(conn) is None
+
+
+def test_connect_no_creds_and_no_bundled_client_errors(app, tmp_path, monkeypatch):
+    db_path = tmp_path / "numobel.db"
+    _seed_db(db_path)
+    monkeypatch.setattr(
+        worker.oauth_client, "get_bundled_client", lambda: None
+    )
+    w = worker.SyncWorker(
+        str(db_path),
+        backend_factory=lambda conn: FakeBackend(),
+        authorizer=lambda cid, csec: '{"token": "fake"}',
+    )
+    events = _capture(w)
+
+    w.requestConnect("", "")
+    QApplication.processEvents()
+
+    errors_seen = [e for e in events if e[0] == "error"]
+    assert errors_seen and errors_seen[-1][1] == "auth"
+    assert _last_status(events) == worker.STATUS_ERROR
+
+
 def test_connect_adopts_populated_sheet(app, tmp_path):
     # Build a populated sheet from a separate db.
     other = tmp_path / "other.db"

@@ -16,11 +16,19 @@ alongside the executable; ``images/`` is created next to it on first photo add.
 
 The Google sync libraries (Sheets/Drive) are bundled here via collected
 submodules + data files, because their dynamic imports, bundled API-discovery
-cache, and TLS certs are missed by PyInstaller's static analysis. NO OAuth
-client id/secret is embedded in the binary: the user enters those at runtime in
-the "Connect Google…" dialog and they are stored in the local ``numobel.db``
-settings table, so the frozen binary contains no secrets.
+cache, and TLS certs are missed by PyInstaller's static analysis.
+
+OAuth client: if a ``google_client.json`` (a *Desktop app* client downloaded
+from the Google Cloud Console) sits next to this spec at build time, it is
+bundled so end users can just click "Connect Google…" and authorize — no
+pasting. A Desktop-app client secret is not confidential (security comes from
+the loopback redirect), so bundling it is safe. The file is gitignored and the
+bundling is optional: a clean checkout without it still builds, and users can
+instead drop ``google_client.json`` next to the executable or set the
+``NUMOBEL_GOOGLE_CLIENT_ID`` / ``NUMOBEL_GOOGLE_CLIENT_SECRET`` env vars.
 """
+
+import os
 
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
@@ -33,6 +41,10 @@ hidden = (
     + ["httplib2", "uritemplate"]
 )
 datas = collect_data_files("googleapiclient") + collect_data_files("certifi")
+
+# Bundle the pre-configured OAuth client only if present (it's gitignored).
+if os.path.exists("google_client.json"):
+    datas += [("google_client.json", ".")]
 
 
 a = Analysis(

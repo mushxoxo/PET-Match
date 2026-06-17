@@ -13,3 +13,6 @@ dist/
 
 # Source data workbook (not tracked)
 my_excel/
+
+# Bundled Google OAuth client (contains the desktop client secret — never commit)
+google_client.json

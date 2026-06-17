@@ -26,11 +26,11 @@ def test_build_client_config_shape():
     }
 
 
-def test_scopes_are_drive_file_and_spreadsheets():
-    assert auth.SCOPES == [
-        "https://www.googleapis.com/auth/drive.file",
-        "https://www.googleapis.com/auth/spreadsheets",
-    ]
+def test_scopes_are_drive_file_only():
+    # Non-sensitive drive.file only: no verification, no 7-day re-auth. The
+    # broader (sensitive) spreadsheets scope is deliberately NOT requested.
+    assert auth.SCOPES == ["https://www.googleapis.com/auth/drive.file"]
+    assert not any("spreadsheets" in s for s in auth.SCOPES)
 
 
 def test_credentials_from_malformed_token_raises_auth_error():

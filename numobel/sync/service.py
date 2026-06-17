@@ -120,8 +120,12 @@ class SyncService(QObject):
     # Public methods (thin: each emits the matching request signal so the
     # actual work runs on the worker thread).
     # --------------------------------------------------------------------- #
-    def connect(self, client_id, client_secret):
-        """Authenticate + link the catalog to a spreadsheet (on the worker)."""
+    def connect(self, client_id="", client_secret=""):
+        """Authenticate + link the catalog to a spreadsheet (on the worker).
+
+        Call with no arguments to use the bundled OAuth client; pass an explicit
+        id/secret only for the manual (advanced) fallback path.
+        """
         self._connectRequested.emit(client_id, client_secret)
 
     def pull(self):

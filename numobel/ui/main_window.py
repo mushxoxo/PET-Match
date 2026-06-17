@@ -320,9 +320,10 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(dialog)
 
         helper = QLabel(
-            "Paste the OAuth client id and secret from a \"Desktop app\" "
-            "client created in the Google Cloud Console "
-            "(APIs & Services → Credentials)."
+            "Advanced: no bundled Google client was found. Paste the OAuth "
+            "client id and secret from a \"Desktop app\" client created in the "
+            "Google Cloud Console (APIs & Services → Credentials), or add a "
+            "google_client.json next to the app."
         )
         helper.setWordWrap(True)
         layout.addWidget(helper)
@@ -351,9 +352,24 @@ class MainWindow(QMainWindow):
         return client_id, client_secret
 
     def _connect_google(self) -> None:
-        """Collect OAuth credentials and link the catalog to Google."""
+        """Link the catalog to Google.
+
+        The common path uses the bundled OAuth client (just opens the browser to
+        sign in). Only when no bundled client is configured do we fall back to
+        asking the user to paste a client id/secret.
+        """
         if self._sync_unavailable():
             return
+
+        from numobel.sync import oauth_client
+
+        if oauth_client.has_bundled_client():
+            # Bundled client: launch the browser sign-in immediately — no
+            # blocking confirmation. The status bar shows "Connecting…" and the
+            # browser opens on its own.
+            self._sync.connect()
+            return
+
         creds = self._collect_google_credentials()
         if creds is None:
             return

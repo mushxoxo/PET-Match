@@ -29,7 +29,7 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, Signal, Slot
 
 from numobel import db
-from numobel.sync import engine, errors, state
+from numobel.sync import engine, errors, oauth_client, state
 
 # --------------------------------------------------------------------------- #
 # UI-facing status strings (single source of truth for the status pill).
@@ -134,12 +134,29 @@ class SyncWorker(QObject):
     # ----------------------------------------------------------------- #
     @Slot(str, str)
     def requestConnect(self, client_id: str, client_secret: str) -> None:
-        """Authenticate, ensure the spreadsheet, then seed-or-adopt the sheet."""
+        """Authenticate, ensure the spreadsheet, then seed-or-adopt the sheet.
+
+        Blank ``client_id``/``client_secret`` mean "use the bundled OAuth client"
+        (the common path — the user just clicks Connect). Only an explicit paste
+        is persisted to settings; the bundled secret is never stored in the DB.
+        """
         self.statusChanged.emit(STATUS_CONNECTING)
         try:
             conn = self._conn()
 
-            state.set_client_credentials(conn, client_id, client_secret)
+            explicit = bool(client_id and client_secret)
+            if not explicit:
+                bundled = oauth_client.get_bundled_client()
+                if bundled is None:
+                    raise errors.AuthError(
+                        "no Google client configured: add google_client.json next "
+                        "to the app, set NUMOBEL_GOOGLE_CLIENT_ID / _SECRET, or "
+                        "paste a client id/secret"
+                    )
+                client_id, client_secret = bundled
+
+            if explicit:
+                state.set_client_credentials(conn, client_id, client_secret)
             token = self._authorizer(client_id, client_secret)
             state.set_token_json(conn, token)
 
