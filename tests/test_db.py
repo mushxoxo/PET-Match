@@ -1,6 +1,6 @@
 """Smoke tests for the NUMOBEL SQLite layer."""
 
-from numobel import db
+from numobel import audit, db
 
 
 def test_schema_roundtrip(tmp_path):
@@ -98,5 +98,79 @@ def test_reset_catalog(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM prices").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == 1
         assert db.get_setting(conn, "keep") == "yes"
+    finally:
+        conn.close()
+
+
+def test_create_schema_audit_has_uuid_column():
+    """Fresh schema includes ``uuid`` as the last audit_log column."""
+    conn = db.connect(":memory:")
+    try:
+        db.create_schema(conn)
+        cols = [row["name"] for row in conn.execute("PRAGMA table_info(audit_log)")]
+        assert "uuid" in cols
+        assert cols[-1] == "uuid"
+    finally:
+        conn.close()
+
+
+def test_log_change_sets_uuid():
+    """log_change mints a 32-hex-char uuid; successive calls differ."""
+    conn = db.connect(":memory:")
+    try:
+        db.create_schema(conn)
+        audit.log_change(conn, "create", "product", 1, {"k": "v"})
+        audit.log_change(conn, "create", "product", 2, {"k": "w"})
+        conn.commit()
+
+        uuids = [
+            row["uuid"]
+            for row in conn.execute("SELECT uuid FROM audit_log ORDER BY id")
+        ]
+        assert len(uuids) == 2
+        for u in uuids:
+            assert u is not None
+            assert len(u) == 32
+            int(u, 16)  # all hex digits
+        assert uuids[0] != uuids[1]
+    finally:
+        conn.close()
+
+
+def test_migrate_adds_and_backfills_audit_uuid():
+    """migrate() adds the uuid column and backfills legacy rows distinctly."""
+    conn = db.connect(":memory:")
+    try:
+        # Build a LEGACY audit_log by hand: the old shape WITHOUT uuid.
+        conn.execute(
+            "CREATE TABLE audit_log ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "ts TEXT, action TEXT, entity TEXT, "
+            "entity_id INTEGER, details TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO audit_log(ts, action, entity, entity_id, details) "
+            "VALUES(?, ?, ?, ?, ?)",
+            ("2026-06-13T00:00:00", "create", "product", 1, "a"),
+        )
+        conn.execute(
+            "INSERT INTO audit_log(ts, action, entity, entity_id, details) "
+            "VALUES(?, ?, ?, ?, ?)",
+            ("2026-06-13T00:00:01", "update", "product", 1, "b"),
+        )
+        conn.commit()
+
+        db.migrate(conn)
+
+        cols = [row["name"] for row in conn.execute("PRAGMA table_info(audit_log)")]
+        assert "uuid" in cols
+
+        uuids = [
+            row["uuid"]
+            for row in conn.execute("SELECT uuid FROM audit_log ORDER BY id")
+        ]
+        assert len(uuids) == 2
+        assert all(u is not None for u in uuids)
+        assert len(set(uuids)) == 2
     finally:
         conn.close()

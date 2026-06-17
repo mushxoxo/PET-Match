@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from datetime import datetime
 from typing import Any, Optional
 
@@ -33,9 +34,9 @@ def log_change(
     if details is not None and not isinstance(details, str):
         details = json.dumps(details, ensure_ascii=False, sort_keys=True)
     conn.execute(
-        "INSERT INTO audit_log(ts, action, entity, entity_id, details) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (_now(), action, entity, entity_id, details),
+        "INSERT INTO audit_log(ts, action, entity, entity_id, details, uuid) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (_now(), action, entity, entity_id, details, uuid.uuid4().hex),
     )
 
 

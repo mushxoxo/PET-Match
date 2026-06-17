@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -127,7 +128,8 @@ def create_schema(conn: sqlite3.Connection) -> None:
             action TEXT,
             entity TEXT,
             entity_id INTEGER,
-            details TEXT
+            details TEXT,
+            uuid TEXT
         );
 
         CREATE TABLE IF NOT EXISTS settings (
@@ -143,6 +145,16 @@ def create_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_products_color_group "
             "ON products(color_group_id)"
+        )
+    # Unique index on the audit uuid serves as the cross-device merge key.
+    # SQLite treats NULLs as distinct, so this coexists with not-yet-backfilled
+    # NULL rows. Fresh DBs have the column from the CREATE above; legacy DBs
+    # (table already exists without uuid) gain both column and index in migrate().
+    acols = {row["name"] for row in conn.execute("PRAGMA table_info(audit_log)")}
+    if "uuid" in acols:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uidx_audit_log_uuid "
+            "ON audit_log(uuid)"
         )
     conn.commit()
 
@@ -185,6 +197,21 @@ def migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_products_color_group "
             "ON products(color_group_id)"
+        )
+
+    acols = {row["name"] for row in conn.execute("PRAGMA table_info(audit_log)")}
+    if "uuid" not in acols:
+        conn.execute("ALTER TABLE audit_log ADD COLUMN uuid TEXT")
+        for row in conn.execute(
+            "SELECT id FROM audit_log WHERE uuid IS NULL"
+        ).fetchall():
+            conn.execute(
+                "UPDATE audit_log SET uuid = ? WHERE id = ?",
+                (uuid.uuid4().hex, row[0]),
+            )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uidx_audit_log_uuid "
+            "ON audit_log(uuid)"
         )
 
     _fold_resolved_links_into_groups(conn)
